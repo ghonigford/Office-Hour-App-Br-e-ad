@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import csv
+import datetime
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal
+from pathlib import Path
+from typing import Any, Generator, Literal, TextIO, Union
+
+CsvSource = Union[str, Path, TextIO]
 
 
 Day = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -56,6 +61,155 @@ def _student_overlap_slots(
         for a, b in student_intervals.get(bl.day, []):
             total += _overlap_len(a, b, bl.start_slot, bl.end_slot)
     return total
+
+
+@contextmanager
+def _open_csv_text(path_or_buf: CsvSource) -> Generator[TextIO, None, None]:
+    if isinstance(path_or_buf, (str, Path)):
+        f = open(path_or_buf, newline="", encoding="utf-8-sig")
+        try:
+            yield f
+        finally:
+            f.close()
+    else:
+        yield path_or_buf
+
+
+def _norm_csv_row(row: dict[str, str | None]) -> dict[str, str]:
+    return {(k or "").strip().lower(): (v or "").strip() for k, v in row.items() if (k or "").strip()}
+
+
+def _get_field(row: dict[str, str], *names: str) -> str | None:
+    for n in names:
+        v = row.get(n.lower())
+        if v:
+            return v
+    return None
+
+
+def _normalize_day(raw: str) -> Day:
+    s = raw.strip().lower()
+    if len(s) < 3:
+        raise ValueError(
+            f"Unrecognized day {raw!r}; use a weekday (e.g. mon, tuesday)."
+        )
+    key = s[:3]
+    if key in ("mon", "tue", "wed", "thu", "fri", "sat", "sun"):
+        return key  # type: ignore[return-value]
+    raise ValueError(
+        f"Unrecognized day {raw!r}; use mon–sun or a full weekday name (e.g. Monday)."
+    )
+
+
+def _time_to_slot_boundary(time_str: str, slot_minutes: int) -> int:
+    t = datetime.datetime.strptime(time_str.strip(), "%H:%M").time()
+    minutes = t.hour * 60 + t.minute
+    if minutes % slot_minutes != 0:
+        raise ValueError(
+            f"Time {time_str!r} is not aligned to {slot_minutes}-minute slots; "
+            f"use times on the grid (e.g. 09:00, 09:30)."
+        )
+    return minutes // slot_minutes
+
+
+def _interval_from_csv_row(
+    row: dict[str, str], *, slot_minutes: int, label: str, line: int
+) -> tuple[Day, int, int]:
+    d_raw = _get_field(row, "day", "d")
+    if not d_raw:
+        raise ValueError(f"{label} line {line}: missing 'day'")
+    day = _normalize_day(d_raw)
+    ss = _get_field(row, "start_slot", "start")
+    es = _get_field(row, "end_slot", "end", "stop")
+    st = _get_field(row, "start_time", "from")
+    en = _get_field(row, "end_time", "to", "until")
+    if ss and es:
+        a, b = int(ss), int(es)
+    elif st and en:
+        a, b = _time_to_slot_boundary(st, slot_minutes), _time_to_slot_boundary(en, slot_minutes)
+    else:
+        raise ValueError(
+            f"{label} line {line}: need (start_slot, end_slot) or (start_time, end_time) for day {d_raw!r}."
+        )
+    if a >= b:
+        raise ValueError(
+            f"{label} line {line}: start must be strictly before end; got {a=} {b=}"
+        )
+    return day, a, b
+
+
+def load_teacher_availability_from_csv(
+    path_or_buf: CsvSource, *, slot_minutes: int = 30
+) -> dict[Day, list[tuple[int, int]]]:
+    """Load teacher open intervals from a CSV (no pre-parsed dict needed).
+
+    Each row: ``day, start_slot, end_slot`` (half-open slot indices), or
+    ``day, start_time, end_time`` (``HH:MM`` in 24h, aligned to ``slot_minutes``).
+    Multiple rows for the same day are allowed; intervals are not merged.
+    """
+    out: dict[Day, list[tuple[int, int]]] = {d: [] for d in DAYS}
+    with _open_csv_text(path_or_buf) as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise ValueError("teacher CSV: missing header row")
+        for i, row in enumerate(reader, start=2):
+            n = _norm_csv_row(row)
+            if not any(n.values()):
+                continue
+            day, a, b = _interval_from_csv_row(
+                n, slot_minutes=slot_minutes, label="teacher CSV", line=i
+            )
+            out[day].append((a, b))
+    return out
+
+
+def load_students_from_csv(path_or_buf: CsvSource, *, slot_minutes: int = 30) -> list[dict[str, Any]]:
+    """Load student free-time intervals from a CSV and build ``optimize_office_hours`` input.
+
+    One row per free interval. Columns: ``id`` (or ``student_id``), ``day``,
+    and either ``(start_slot, end_slot)`` or ``(start_time, end_time)`` (same
+    rules as the teacher file). Rows for the same id are merged.
+    """
+    by_id: dict[str, dict[Day, list[tuple[int, int]]]] = {}
+    with _open_csv_text(path_or_buf) as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise ValueError("students CSV: missing header row")
+        for i, row in enumerate(reader, start=2):
+            n = _norm_csv_row(row)
+            if not any(n.values()):
+                continue
+            sid = _get_field(n, "id", "student_id", "student")
+            if not sid:
+                raise ValueError(f"students CSV line {i}: missing id (use id, student_id, or student).")
+            day, a, b = _interval_from_csv_row(
+                n, slot_minutes=slot_minutes, label="students CSV", line=i
+            )
+            stu = by_id.setdefault(
+                sid, {d: [] for d in DAYS}
+            )
+            stu[day].append((a, b))
+    return [{"id": sid, "availability": av} for sid, av in by_id.items()]
+
+
+def optimize_office_hours_from_csv(
+    teacher_csv: CsvSource,
+    students_csv: CsvSource,
+    *,
+    slot_minutes: int = 30,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Run :func:`optimize_office_hours` after loading the two input CSVs."""
+    teacher_availability = load_teacher_availability_from_csv(
+        teacher_csv, slot_minutes=slot_minutes
+    )
+    students = load_students_from_csv(students_csv, slot_minutes=slot_minutes)
+    return optimize_office_hours(
+        teacher_availability=teacher_availability,
+        students=students,
+        slot_minutes=slot_minutes,
+        **kwargs,
+    )
 
 
 def optimize_office_hours(
@@ -289,29 +443,52 @@ def export_result_json(result: dict[str, Any], path: str) -> None:
         json.dump(result, f, indent=2)
 
 
-if __name__ == "__main__":  # minimal local smoke-runner
-    # This runner is intentionally tiny: it just demonstrates the expected data shape.
-    # Your teammate can replace these with CSV-parsed inputs in the web layer.
-    teacher = {
-        "mon": [(18, 24)],  # 9:00-12:00 if 30-min slots (18*30=540)
-        "tue": [(26, 32)],
-        "wed": [(18, 24)],
-        "thu": [(26, 32)],
-        "fri": [(18, 24)],
-        "sat": [],
-        "sun": [],
-    }
-    students_in = [
-        {"id": "s1", "availability": {"mon": [(20, 22)], "wed": [(18, 20)]}},
-        {"id": "s2", "availability": {"tue": [(26, 30)]}},
-        {"id": "s3", "availability": {"thu": [(28, 32)], "fri": [(18, 19)]}},
-    ]
-    res = optimize_office_hours(
-        teacher_availability=teacher,
-        students=students_in,
-        weights={"coverage": 1.0, "overlap": 0.2, "fairness": 0.8},
-        n_generations=150,
-        pop_size=150,
-        seed=2,
-    )
+if __name__ == "__main__":  # minimal local smoke-runner (CSV or inline)
+    import sys
+
+    _here = Path(__file__).resolve().parent
+    _default_teacher = _here / "schedules" / "teacher_availability.csv"
+    _default_students = _here / "schedules" / "students_availability.csv"
+
+    if len(sys.argv) >= 3:
+        res = optimize_office_hours_from_csv(
+            sys.argv[1],
+            sys.argv[2],
+            weights={"coverage": 1.0, "overlap": 0.2, "fairness": 0.8},
+            n_generations=150,
+            pop_size=150,
+            seed=2,
+        )
+    elif _default_teacher.is_file() and _default_students.is_file():
+        res = optimize_office_hours_from_csv(
+            _default_teacher,
+            _default_students,
+            weights={"coverage": 1.0, "overlap": 0.2, "fairness": 0.8},
+            n_generations=150,
+            pop_size=150,
+            seed=2,
+        )
+    else:
+        teacher = {
+            "mon": [(18, 24)],
+            "tue": [(26, 32)],
+            "wed": [(18, 24)],
+            "thu": [(26, 32)],
+            "fri": [(18, 24)],
+            "sat": [],
+            "sun": [],
+        }
+        students_in = [
+            {"id": "s1", "availability": {"mon": [(20, 22)], "wed": [(18, 20)]}},
+            {"id": "s2", "availability": {"tue": [(26, 30)]}},
+            {"id": "s3", "availability": {"thu": [(28, 32)], "fri": [(18, 19)]}},
+        ]
+        res = optimize_office_hours(
+            teacher_availability=teacher,
+            students=students_in,
+            weights={"coverage": 1.0, "overlap": 0.2, "fairness": 0.8},
+            n_generations=150,
+            pop_size=150,
+            seed=2,
+        )
     print(json.dumps(res, indent=2))
