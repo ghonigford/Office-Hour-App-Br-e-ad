@@ -564,6 +564,8 @@
         const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
         const START_SLOT = 16; // 8:00 AM
         const END_SLOT = 40; // 8:00 PM
+        let isDragging = false;
+        let dragShouldActivate = null;
 
         function slotToLabel(slot) {
             const totalMinutes = slot * 30;
@@ -590,7 +592,7 @@
             previewBox.textContent = `${studentSection}\n\n${teacherSection}`;
         }
 
-        function buildCalendar(containerId, getIsActive, toggleCell) {
+        function buildCalendar(containerId, getIsActive, setCellState) {
             const root = document.getElementById(containerId);
             root.innerHTML = "";
 
@@ -609,10 +611,23 @@
                     if (getIsActive(day, slot)) {
                         cell.classList.add("active");
                     }
-                    if (toggleCell) {
-                        cell.addEventListener("click", () => {
-                            toggleCell(day, slot);
-                            cell.classList.toggle("active");
+                    if (setCellState) {
+                        const applyState = (active) => {
+                            setCellState(day, slot, active);
+                            cell.classList.toggle("active", getIsActive(day, slot));
+                        };
+
+                        cell.addEventListener("mousedown", (event) => {
+                            if (event.button !== 0) return;
+                            event.preventDefault();
+                            isDragging = true;
+                            dragShouldActivate = !getIsActive(day, slot);
+                            applyState(dragShouldActivate);
+                        });
+
+                        cell.addEventListener("mouseenter", () => {
+                            if (!isDragging || dragShouldActivate === null) return;
+                            applyState(dragShouldActivate);
                         });
                     }
                     root.appendChild(cell);
@@ -722,11 +737,16 @@
             buildCalendar(
                 "studentCalendar",
                 (day, slot) => activeSet.has(`${day}:${slot}`),
-                (day, slot) => {
+                (day, slot, active) => {
                     const key = `${day}:${slot}`;
-                    if (activeSet.has(key)) activeSet.delete(key);
-                    else activeSet.add(key);
-                    serializeManualRows();
+                    const alreadyActive = activeSet.has(key);
+                    if (active && !alreadyActive) {
+                        activeSet.add(key);
+                        serializeManualRows();
+                    } else if (!active && alreadyActive) {
+                        activeSet.delete(key);
+                        serializeManualRows();
+                    }
                 }
             );
         }
@@ -735,11 +755,16 @@
             buildCalendar(
                 "teacherCalendar",
                 (day, slot) => teacherSet.has(`${day}:${slot}`),
-                (day, slot) => {
+                (day, slot, active) => {
                     const key = `${day}:${slot}`;
-                    if (teacherSet.has(key)) teacherSet.delete(key);
-                    else teacherSet.add(key);
-                    serializeManualRows();
+                    const alreadyActive = teacherSet.has(key);
+                    if (active && !alreadyActive) {
+                        teacherSet.add(key);
+                        serializeManualRows();
+                    } else if (!active && alreadyActive) {
+                        teacherSet.delete(key);
+                        serializeManualRows();
+                    }
                 }
             );
         }
@@ -780,6 +805,16 @@
             teacherSet.clear();
             rebuildTeacherCalendar();
             serializeManualRows();
+        });
+
+        document.addEventListener("mouseup", () => {
+            isDragging = false;
+            dragShouldActivate = null;
+        });
+
+        window.addEventListener("blur", () => {
+            isDragging = false;
+            dragShouldActivate = null;
         });
 
         setupTabs("students");
