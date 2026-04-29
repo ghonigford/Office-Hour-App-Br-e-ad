@@ -170,6 +170,15 @@
             color: #0f172a;
         }
 
+        .btn-danger {
+            background: #dc2626;
+            color: #ffffff;
+        }
+
+        .btn-danger:hover {
+            background: #b91c1c;
+        }
+
         .toolbar {
             display: flex;
             gap: 8px;
@@ -476,7 +485,7 @@
                     <div class="calendar-wrap">
                         <div class="calendar-grid" id="studentCalendar"></div>
                     </div>
-                    <button class="btn btn-secondary" id="clearStudentGrid" type="button">Clear Current Student Availability</button>
+                    <button class="btn btn-danger" id="clearStudentGrid" type="button">Clear Current Student Availability</button>
                     <textarea class="hidden-manual" id="studentRows" name="students_manual">{{ request.form.get("students_manual", "") }}</textarea>
                 </section>
             </article>
@@ -506,7 +515,7 @@
                     <div class="calendar-wrap">
                         <div class="calendar-grid" id="teacherCalendar"></div>
                     </div>
-                    <button class="btn btn-secondary" id="clearTeacherGrid" type="button">Clear Teacher Availability</button>
+                    <button class="btn btn-danger" id="clearTeacherGrid" type="button">Clear Teacher Availability</button>
                     <textarea class="hidden-manual" id="teacherRows" name="teachers_manual">{{ request.form.get("teachers_manual", "") }}</textarea>
                 </section>
             </article>
