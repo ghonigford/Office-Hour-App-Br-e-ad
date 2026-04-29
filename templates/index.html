@@ -5,47 +5,809 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Office Hours Scheduler</title>
     <style>
+        :root {
+            --bg: #f4f7fb;
+            --panel: #ffffff;
+            --text: #111827;
+            --muted: #6b7280;
+            --border: #dbe3ee;
+            --accent: #2563eb;
+            --accent-soft: #eff6ff;
+            --shadow: 0 12px 30px rgba(17, 24, 39, 0.08);
+        }
+
         * {
-            margin: 0;
-            padding: 0;
             box-sizing: border-box;
         }
 
         body {
+            margin: 0;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #f0f4f8;
-            display: flex;
-            justify-content: center;
-            align-items: center;
+            background: linear-gradient(180deg, #eef3fb 0%, var(--bg) 100%);
+            color: var(--text);
             min-height: 100vh;
-            color: #2d3748;
+            padding: 32px 16px;
         }
 
-        .container {
-            text-align: center;
-            background: white;
-            padding: 3rem 4rem;
+        .app-shell {
+            max-width: 1100px;
+            margin: 0 auto;
+            display: grid;
+            gap: 20px;
+        }
+
+        .hero {
+            background: var(--panel);
+            border: 1px solid var(--border);
             border-radius: 16px;
-            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+            box-shadow: var(--shadow);
+            padding: 28px;
         }
 
-        h1 {
+        .hero h1 {
+            margin: 0;
             font-size: 2rem;
-            font-weight: 700;
-            margin-bottom: 0.75rem;
-            color: #1a202c;
+            line-height: 1.2;
         }
 
-        p {
+        .hero p {
+            margin: 10px 0 0;
+            color: var(--muted);
+            max-width: 760px;
+        }
+
+        .workspace {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            align-items: start;
+        }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            padding: 20px;
+            display: grid;
+            gap: 14px;
+            align-self: start;
+        }
+
+        .card-title {
+            margin: 0;
             font-size: 1.1rem;
-            color: #718096;
+        }
+
+        .muted {
+            margin: 0;
+            font-size: 0.92rem;
+            color: var(--muted);
+        }
+
+        .tabs {
+            display: inline-flex;
+            background: #f8fafc;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 4px;
+            gap: 4px;
+            width: fit-content;
+        }
+
+        .tab-btn {
+            border: 0;
+            border-radius: 8px;
+            background: transparent;
+            color: #334155;
+            font-weight: 600;
+            padding: 8px 12px;
+            cursor: pointer;
+        }
+
+        .tab-btn.active {
+            background: var(--panel);
+            color: var(--accent);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+        }
+
+        .tab-pane {
+            display: none;
+            gap: 10px;
+        }
+
+        .tab-pane.active {
+            display: grid;
+        }
+
+        .row {
+            display: grid;
+            gap: 8px;
+        }
+
+        .input-label {
+            font-size: 0.9rem;
+            color: #334155;
+            font-weight: 600;
+        }
+
+        input, select, textarea {
+            width: 100%;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px;
+            font: inherit;
+            background: #fff;
+        }
+
+        textarea {
+            min-height: 140px;
+            resize: vertical;
+        }
+
+        .input-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr 1fr;
+            gap: 8px;
+            align-items: end;
+        }
+
+        .btn {
+            border: 0;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #0f172a;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .list {
+            margin: 0;
+            padding-left: 18px;
+            color: var(--muted);
+            font-size: 0.92rem;
+            display: grid;
+            gap: 4px;
+        }
+
+        .info-wrap {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .info-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 999px;
+            border: 1px solid #bfdbfe;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-weight: 700;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .info-panel {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: 30px;
+            width: min(540px, 90vw);
+            z-index: 100;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            padding: 14px;
+            color: #0f172a;
+        }
+
+        .info-panel.open {
+            display: block;
+        }
+
+        .info-panel h3 {
+            margin: 0 0 8px;
+            font-size: 1rem;
+        }
+
+        .info-panel p {
+            margin: 6px 0;
+            color: #334155;
+            font-size: 0.9rem;
+        }
+
+        code {
+            background: #f8fafc;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0 4px;
+        }
+
+        .preview {
+            margin-top: 8px;
+            border: 1px dashed var(--border);
+            border-radius: 10px;
+            padding: 10px;
+            font-size: 0.9rem;
+            color: #334155;
+            background: #fafcff;
+            white-space: pre-wrap;
+        }
+
+        .calendar-wrap {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: auto;
+            max-height: 380px;
+            background: #fff;
+        }
+
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: 90px repeat(5, minmax(80px, 1fr));
+            min-width: 620px;
+        }
+
+        .cell {
+            border-right: 1px solid #edf2f7;
+            border-bottom: 1px solid #edf2f7;
+            padding: 8px 6px;
+            font-size: 0.85rem;
+            text-align: center;
+            user-select: none;
+        }
+
+        .cell.head {
+            background: #f8fafc;
+            font-weight: 700;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+        }
+
+        .cell.time {
+            background: #f8fafc;
+            color: #475569;
+            font-weight: 600;
+            position: sticky;
+            left: 0;
+            z-index: 1;
+        }
+
+        .cell.slot {
+            cursor: pointer;
+            background: #ffffff;
+        }
+
+        .cell.slot:hover {
+            background: #eff6ff;
+        }
+
+        .cell.slot.active {
+            background: #bfdbfe;
+            color: #1e3a8a;
+            font-weight: 700;
+        }
+
+        .hidden-manual {
+            display: none;
+        }
+
+        .status {
+            border-radius: 10px;
+            padding: 12px;
+            font-size: 0.95rem;
+        }
+
+        .status-error {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            color: #991b1b;
+        }
+
+        .status-ok {
+            background: #ecfdf5;
+            border: 1px solid #a7f3d0;
+            color: #065f46;
+        }
+
+        .result-btn {
+            margin-top: 8px;
+        }
+
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.55);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            padding: 16px;
+        }
+
+        .modal-backdrop.open {
+            display: flex;
+        }
+
+        .modal-card {
+            width: min(980px, 96vw);
+            max-height: 90vh;
+            overflow: auto;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            box-shadow: var(--shadow);
+            padding: 16px;
+            display: grid;
+            gap: 12px;
+        }
+
+        .result-slot {
+            background: #86efac !important;
+            color: #14532d !important;
+            font-weight: 700;
+        }
+
+        @media (max-width: 900px) {
+            .workspace {
+                grid-template-columns: 1fr;
+            }
+
+            .input-grid {
+                grid-template-columns: 1fr 1fr;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Office Hours Scheduler</h1>
-        <p>Coming soon.</p>
-    </div>
+    <main class="app-shell">
+        <section class="hero">
+            <div class="info-wrap">
+                <h1>Office Hours Scheduler</h1>
+                <button class="info-icon" id="infoToggle" aria-label="Show format help">i</button>
+                <div class="info-panel" id="infoPanel">
+                    <h3>Input Format Help</h3>
+                    <p><strong>Student CSV format (from repo):</strong> <code>id,day,start_slot,end_slot</code></p>
+                    <p>Example: <code>s1,mon,20,22</code></p>
+                    <p><strong>Teacher CSV format (from repo):</strong> <code>day,start_slot,end_slot</code></p>
+                    <p>Example: <code>mon,18,24</code></p>
+                    <p><strong>Alternative template in repo:</strong> <code>student,Monday_start,Monday_end,...,Friday_end</code> using times like <code>10:00</code>.</p>
+                    <p><strong>Manual entry fields:</strong> use the same values as the slot-based CSV rows (<code>day</code>, <code>start_slot</code>, <code>end_slot</code>) and include <code>student id</code> for student entries.</p>
+                </div>
+            </div>
+            <p>
+                Upload CSV files or manually enter student and teacher availability. This page is designed to make
+                data entry fast, clear, and ready for scheduling.
+            </p>
+        </section>
+
+        {% if error %}
+        <section class="status status-error">{{ error }}</section>
+        {% endif %}
+        {% if result %}
+        <section class="status status-ok">
+            Best slot: <strong>{{ result.slot_day }}</strong>,
+            <strong>{{ result.start_slot_in_day }}</strong> to
+            <strong>{{ result.end_slot_in_day }}</strong> (slot indices in that day).
+            Coverage: <strong>{{ result.students_covered }}</strong>/<strong>{{ result.total_students }}</strong>
+            ({{ "%.1f"|format(result.coverage_ratio * 100) }}%).
+            <br />
+            Output row format: <code>day,start_slot,end_slot</code> -> <code>{{ result.slot_day }},{{ result.start_slot_in_day }},{{ result.end_slot_in_day }}</code>
+            <div>
+                <button type="button" class="btn btn-primary result-btn" id="openResultCalendar">View Result Calendar</button>
+            </div>
+        </section>
+        <div
+            id="resultData"
+            data-day="{{ result.slot_day }}"
+            data-start="{{ result.start_slot_in_day }}"
+            data-end="{{ result.end_slot_in_day }}"
+        ></div>
+        <div class="modal-backdrop" id="resultModal">
+            <div class="modal-card">
+                <div class="toolbar" style="justify-content: space-between;">
+                    <h2 class="card-title">Optimal Time Slot (Calendar View)</h2>
+                    <button type="button" class="btn btn-secondary" id="closeResultCalendar">Close</button>
+                </div>
+                <p class="muted">Highlighted blocks show the recommended office hour window.</p>
+                <div class="calendar-wrap">
+                    <div class="calendar-grid" id="resultCalendar"></div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <form method="post" enctype="multipart/form-data" class="workspace">
+            <article class="card">
+                <h2 class="card-title">Students</h2>
+                <p class="muted">Provide student availability by CSV upload or manual rows.</p>
+                <div class="tabs" data-tabs="students">
+                    <button class="tab-btn active" data-target="students-upload" type="button">CSV Upload</button>
+                    <button class="tab-btn" data-target="students-manual" type="button">Manual Input</button>
+                </div>
+
+                <section class="tab-pane active" id="students-upload">
+                    <div class="row">
+                        <label class="input-label" for="studentsCsv">Student CSV file</label>
+                        <input type="file" id="studentsCsv" name="students_csv" accept=".csv" />
+                    </div>
+                    <ul class="list">
+                        <li>Expected headers: <code>id,day,start_slot,end_slot</code></li>
+                        <li>Days should use short names like <code>mon</code>, <code>tue</code>, <code>wed</code>.</li>
+                        <li>Slots should be integers.</li>
+                    </ul>
+                </section>
+
+                <section class="tab-pane" id="students-manual">
+                    <div class="row">
+                        <label class="input-label" for="studentNameInput">Add student</label>
+                        <div class="toolbar">
+                            <input id="studentNameInput" placeholder="e.g. s1 or Alice" />
+                            <button class="btn btn-primary" id="addStudentBtn" type="button">Add Student</button>
+                            <button class="btn btn-secondary" id="removeStudentBtn" type="button">Remove Selected</button>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label class="input-label" for="studentSelector">Editing availability for</label>
+                        <select id="studentSelector"></select>
+                    </div>
+                    <p class="muted">Click blocks to toggle availability (Mon-Fri, 8:00 AM to 8:00 PM in 30-min slots).</p>
+                    <div class="calendar-wrap">
+                        <div class="calendar-grid" id="studentCalendar"></div>
+                    </div>
+                    <button class="btn btn-secondary" id="clearStudentGrid" type="button">Clear Current Student Availability</button>
+                    <textarea class="hidden-manual" id="studentRows" name="students_manual">{{ request.form.get("students_manual", "") }}</textarea>
+                </section>
+            </article>
+
+            <article class="card">
+                <h2 class="card-title">Teachers</h2>
+                <p class="muted">Provide teacher availability by CSV upload or manual rows.</p>
+                <div class="tabs" data-tabs="teachers">
+                    <button class="tab-btn active" data-target="teachers-upload" type="button">CSV Upload</button>
+                    <button class="tab-btn" data-target="teachers-manual" type="button">Manual Input</button>
+                </div>
+
+                <section class="tab-pane active" id="teachers-upload">
+                    <div class="row">
+                        <label class="input-label" for="teachersCsv">Teacher CSV file</label>
+                        <input type="file" id="teachersCsv" name="teachers_csv" accept=".csv" />
+                    </div>
+                    <ul class="list">
+                        <li>Expected headers: <code>day,start_slot,end_slot</code></li>
+                        <li>Days should use short names like <code>mon</code>, <code>tue</code>, <code>wed</code>.</li>
+                        <li>Slots should be integers.</li>
+                    </ul>
+                </section>
+
+                <section class="tab-pane" id="teachers-manual">
+                    <p class="muted">Click blocks to toggle teacher availability (Mon-Fri, 8:00 AM to 8:00 PM in 30-min slots).</p>
+                    <div class="calendar-wrap">
+                        <div class="calendar-grid" id="teacherCalendar"></div>
+                    </div>
+                    <button class="btn btn-secondary" id="clearTeacherGrid" type="button">Clear Teacher Availability</button>
+                    <textarea class="hidden-manual" id="teacherRows" name="teachers_manual">{{ request.form.get("teachers_manual", "") }}</textarea>
+                </section>
+            </article>
+            <article class="card" style="grid-column: 1 / -1;">
+                <h2 class="card-title">Run Optimization</h2>
+                <p class="muted">Manual text is used if present; otherwise uploaded CSV files are used.</p>
+                <div class="input-grid" style="grid-template-columns: 220px 1fr;">
+                    <div class="row">
+                        <label class="input-label" for="slotLength">Office Hour Length (slots)</label>
+                        <input id="slotLength" name="slot_length_slots" type="number" min="1" value="{{ request.form.get('slot_length_slots', 2) }}" />
+                    </div>
+                </div>
+                <div class="toolbar">
+                    <button class="btn btn-primary" type="submit">Run Scheduler</button>
+                </div>
+            </article>
+        </form>
+
+        <section class="card">
+            <h2 class="card-title">Current Input Preview</h2>
+            <p class="muted">Quick check before wiring this data into scheduling logic.</p>
+            <div class="preview" id="previewBox">No manual rows added yet.</div>
+        </section>
+    </main>
+
+    <script>
+        function setupTabs(groupName) {
+            const group = document.querySelector(`[data-tabs="${groupName}"]`);
+            if (!group) return;
+
+            const buttons = group.querySelectorAll(".tab-btn");
+            buttons.forEach((btn) => {
+                btn.addEventListener("click", () => {
+                    buttons.forEach((b) => b.classList.remove("active"));
+                    btn.classList.add("active");
+
+                    const card = group.closest(".card");
+                    card.querySelectorAll(".tab-pane").forEach((pane) => pane.classList.remove("active"));
+                    const target = card.querySelector(`#${btn.dataset.target}`);
+                    if (target) target.classList.add("active");
+                });
+            });
+        }
+
+        const DAYS = ["mon", "tue", "wed", "thu", "fri"];
+        const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+        const START_SLOT = 16; // 8:00 AM
+        const END_SLOT = 40; // 8:00 PM
+
+        function slotToLabel(slot) {
+            const totalMinutes = slot * 30;
+            let h = Math.floor(totalMinutes / 60);
+            const m = totalMinutes % 60;
+            const suffix = h >= 12 ? "PM" : "AM";
+            h = h % 12;
+            if (h === 0) h = 12;
+            return `${h}:${m === 0 ? "00" : m} ${suffix}`;
+        }
+
+        function updatePreview() {
+            const studentRows = document.getElementById("studentRows").value.trim();
+            const teacherRows = document.getElementById("teacherRows").value.trim();
+            const previewBox = document.getElementById("previewBox");
+
+            if (!studentRows && !teacherRows) {
+                previewBox.textContent = "No manual rows added yet.";
+                return;
+            }
+
+            const studentSection = studentRows ? `Students:\n${studentRows}` : "Students:\n(none)";
+            const teacherSection = teacherRows ? `Teachers:\n${teacherRows}` : "Teachers:\n(none)";
+            previewBox.textContent = `${studentSection}\n\n${teacherSection}`;
+        }
+
+        function buildCalendar(containerId, getIsActive, toggleCell) {
+            const root = document.getElementById(containerId);
+            root.innerHTML = "";
+
+            root.appendChild(Object.assign(document.createElement("div"), { className: "cell head", textContent: "Time" }));
+            DAY_LABELS.forEach((label) => {
+                root.appendChild(Object.assign(document.createElement("div"), { className: "cell head", textContent: label }));
+            });
+
+            for (let slot = START_SLOT; slot < END_SLOT; slot += 1) {
+                root.appendChild(Object.assign(document.createElement("div"), { className: "cell time", textContent: slotToLabel(slot) }));
+                DAYS.forEach((day) => {
+                    const cell = document.createElement("div");
+                    cell.className = "cell slot";
+                    cell.dataset.day = day;
+                    cell.dataset.slot = String(slot);
+                    if (getIsActive(day, slot)) {
+                        cell.classList.add("active");
+                    }
+                    if (toggleCell) {
+                        cell.addEventListener("click", () => {
+                            toggleCell(day, slot);
+                            cell.classList.toggle("active");
+                        });
+                    }
+                    root.appendChild(cell);
+                });
+            }
+        }
+
+        function buildResultCalendar(day, startSlot, endSlot) {
+            const root = document.getElementById("resultCalendar");
+            if (!root) return;
+            root.innerHTML = "";
+
+            root.appendChild(Object.assign(document.createElement("div"), { className: "cell head", textContent: "Time" }));
+            DAY_LABELS.forEach((label) => {
+                root.appendChild(Object.assign(document.createElement("div"), { className: "cell head", textContent: label }));
+            });
+
+            const start = Math.max(START_SLOT, startSlot - 4);
+            const end = Math.min(END_SLOT, endSlot + 4);
+
+            for (let slot = start; slot < end; slot += 1) {
+                root.appendChild(Object.assign(document.createElement("div"), { className: "cell time", textContent: slotToLabel(slot) }));
+                DAYS.forEach((d) => {
+                    const cell = document.createElement("div");
+                    cell.className = "cell slot";
+                    if (d === day && slot >= startSlot && slot < endSlot) {
+                        cell.classList.add("active", "result-slot");
+                    }
+                    root.appendChild(cell);
+                });
+            }
+        }
+
+        function compressSlots(activeSet) {
+            const rows = [];
+            DAYS.forEach((day) => {
+                const daySlots = Array.from(activeSet)
+                    .filter((key) => key.startsWith(`${day}:`))
+                    .map((key) => Number(key.split(":")[1]))
+                    .sort((a, b) => a - b);
+                if (daySlots.length === 0) return;
+                let start = daySlots[0];
+                let prev = daySlots[0];
+                for (let i = 1; i < daySlots.length; i += 1) {
+                    const s = daySlots[i];
+                    if (s === prev + 1) {
+                        prev = s;
+                        continue;
+                    }
+                    rows.push([day, start, prev + 1]);
+                    start = s;
+                    prev = s;
+                }
+                rows.push([day, start, prev + 1]);
+            });
+            return rows;
+        }
+
+        const studentMap = new Map();
+        const studentSelector = document.getElementById("studentSelector");
+
+        function selectedStudent() {
+            return studentSelector.value;
+        }
+
+        function refreshStudentSelector() {
+            const current = selectedStudent();
+            studentSelector.innerHTML = "";
+            Array.from(studentMap.keys()).forEach((name) => {
+                const option = document.createElement("option");
+                option.value = name;
+                option.textContent = name;
+                studentSelector.appendChild(option);
+            });
+            if (studentMap.size > 0) {
+                studentSelector.value = studentMap.has(current) ? current : Array.from(studentMap.keys())[0];
+            }
+        }
+
+        function serializeManualRows() {
+            const studentRows = [];
+            studentMap.forEach((activeSet, studentId) => {
+                compressSlots(activeSet).forEach(([day, start, end]) => {
+                    studentRows.push(`${studentId},${day},${start},${end}`);
+                });
+            });
+            document.getElementById("studentRows").value = studentRows.join("\n");
+
+            const teacherRows = compressSlots(teacherSet).map(([day, start, end]) => `${day},${start},${end}`);
+            document.getElementById("teacherRows").value = teacherRows.join("\n");
+            updatePreview();
+        }
+
+        function ensureDefaultStudent() {
+            if (studentMap.size === 0) {
+                studentMap.set("s1", new Set());
+                refreshStudentSelector();
+            }
+        }
+
+        ensureDefaultStudent();
+        const teacherSet = new Set();
+
+        function rebuildStudentCalendar() {
+            ensureDefaultStudent();
+            const activeSet = studentMap.get(selectedStudent()) || new Set();
+            buildCalendar(
+                "studentCalendar",
+                (day, slot) => activeSet.has(`${day}:${slot}`),
+                (day, slot) => {
+                    const key = `${day}:${slot}`;
+                    if (activeSet.has(key)) activeSet.delete(key);
+                    else activeSet.add(key);
+                    serializeManualRows();
+                }
+            );
+        }
+
+        function rebuildTeacherCalendar() {
+            buildCalendar(
+                "teacherCalendar",
+                (day, slot) => teacherSet.has(`${day}:${slot}`),
+                (day, slot) => {
+                    const key = `${day}:${slot}`;
+                    if (teacherSet.has(key)) teacherSet.delete(key);
+                    else teacherSet.add(key);
+                    serializeManualRows();
+                }
+            );
+        }
+
+        document.getElementById("addStudentBtn").addEventListener("click", () => {
+            const input = document.getElementById("studentNameInput");
+            const name = input.value.trim();
+            if (!name) return;
+            if (!studentMap.has(name)) {
+                studentMap.set(name, new Set());
+            }
+            input.value = "";
+            refreshStudentSelector();
+            studentSelector.value = name;
+            rebuildStudentCalendar();
+            serializeManualRows();
+        });
+
+        document.getElementById("removeStudentBtn").addEventListener("click", () => {
+            if (studentMap.size <= 1) return;
+            studentMap.delete(selectedStudent());
+            refreshStudentSelector();
+            rebuildStudentCalendar();
+            serializeManualRows();
+        });
+
+        studentSelector.addEventListener("change", rebuildStudentCalendar);
+
+        document.getElementById("clearStudentGrid").addEventListener("click", () => {
+            const activeSet = studentMap.get(selectedStudent());
+            if (!activeSet) return;
+            activeSet.clear();
+            rebuildStudentCalendar();
+            serializeManualRows();
+        });
+
+        document.getElementById("clearTeacherGrid").addEventListener("click", () => {
+            teacherSet.clear();
+            rebuildTeacherCalendar();
+            serializeManualRows();
+        });
+
+        setupTabs("students");
+        setupTabs("teachers");
+
+        const infoToggle = document.getElementById("infoToggle");
+        const infoPanel = document.getElementById("infoPanel");
+        infoToggle.addEventListener("click", () => {
+            infoPanel.classList.toggle("open");
+        });
+
+        const resultData = document.getElementById("resultData");
+        const resultModal = document.getElementById("resultModal");
+        const openResultCalendar = document.getElementById("openResultCalendar");
+        const closeResultCalendar = document.getElementById("closeResultCalendar");
+        if (resultData && resultModal && openResultCalendar && closeResultCalendar) {
+            const day = resultData.dataset.day;
+            const start = Number(resultData.dataset.start);
+            const end = Number(resultData.dataset.end);
+            buildResultCalendar(day, start, end);
+
+            openResultCalendar.addEventListener("click", () => {
+                resultModal.classList.add("open");
+            });
+            closeResultCalendar.addEventListener("click", () => {
+                resultModal.classList.remove("open");
+            });
+            resultModal.addEventListener("click", (event) => {
+                if (event.target === resultModal) {
+                    resultModal.classList.remove("open");
+                }
+            });
+        }
+
+        rebuildStudentCalendar();
+        rebuildTeacherCalendar();
+        serializeManualRows();
+    </script>
 </body>
 </html>
