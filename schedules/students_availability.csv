@@ -1,0 +1,6 @@
+id,day,start_slot,end_slot
+s1,mon,20,22
+s1,wed,18,20
+s2,tue,26,30
+s3,thu,28,32
+s3,fri,18,19
