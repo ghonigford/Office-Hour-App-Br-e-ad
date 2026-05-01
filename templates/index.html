@@ -170,6 +170,15 @@
             color: #0f172a;
         }
 
+        .btn-danger {
+            background: #dc2626;
+            color: #ffffff;
+        }
+
+        .btn-danger:hover {
+            background: #b91c1c;
+        }
+
         .toolbar {
             display: flex;
             gap: 8px;
@@ -335,6 +344,50 @@
             margin-top: 8px;
         }
 
+        .run-controls {
+            display: grid;
+            grid-template-columns: minmax(160px, 220px) minmax(140px, 200px) auto;
+            gap: 16px;
+            align-items: end;
+        }
+
+        .run-controls .run-submit .btn {
+            width: 100%;
+            padding: 10px 18px;
+        }
+
+        @media (max-width: 700px) {
+            .run-controls {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .blocks-list {
+            margin: 8px 0 0;
+            padding: 0;
+            list-style: none;
+            display: grid;
+            gap: 6px;
+        }
+
+        .blocks-list li {
+            background: #ffffff;
+            border: 1px solid #bbf7d0;
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-size: 0.95rem;
+            color: #065f46;
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .blocks-list .block-coverage {
+            color: #047857;
+            font-weight: 600;
+        }
+
         .modal-backdrop {
             position: fixed;
             inset: 0;
@@ -406,31 +459,54 @@
         <section class="status status-error">{{ error }}</section>
         {% endif %}
         {% if result %}
+        {% set day_label_map = {'mon': 'Mon', 'tue': 'Tue', 'wed': 'Wed', 'thu': 'Thu', 'fri': 'Fri'} %}
+        {% macro fmt_slot(slot) -%}
+            {%- set hour24 = (slot * 30) // 60 -%}
+            {%- set minute = (slot * 30) % 60 -%}
+            {%- set suffix = 'PM' if hour24 >= 12 else 'AM' -%}
+            {%- set hour12 = hour24 % 12 -%}
+            {%- if hour12 == 0 %}{% set hour12 = 12 %}{% endif -%}
+            {{ hour12 }}:{{ '%02d' % minute }} {{ suffix }}
+        {%- endmacro %}
         <section class="status status-ok">
-            Best slot: <strong>{{ result.slot_day }}</strong>,
-            <strong>{{ result.start_slot_in_day }}</strong> to
-            <strong>{{ result.end_slot_in_day }}</strong> (slot indices in that day).
-            Coverage: <strong>{{ result.students_covered }}</strong>/<strong>{{ result.total_students }}</strong>
-            ({{ "%.1f"|format(result.coverage_ratio * 100) }}%).
-            <br />
-            Output row format: <code>day,start_slot,end_slot</code> -> <code>{{ result.slot_day }},{{ result.start_slot_in_day }},{{ result.end_slot_in_day }}</code>
+            <div>
+                Selected <strong>{{ result.num_blocks_selected }}</strong>
+                of <strong>{{ result.num_blocks_requested }}</strong> requested
+                {{ '30-minute' if result.slot_length_slots == 1 else '%d-minute'|format(result.slot_length_slots * 30) }}
+                block{{ '' if result.num_blocks_selected == 1 else 's' }}.
+                Unique students reachable across all blocks:
+                <strong>{{ result.students_covered }}</strong>/<strong>{{ result.total_students }}</strong>
+                ({{ "%.1f"|format(result.coverage_ratio * 100) }}%).
+            </div>
+            <ul class="blocks-list">
+                {% for block in result.blocks %}
+                <li>
+                    <span>
+                        <strong>{{ day_label_map.get(block.slot_day, block.slot_day) }}</strong>
+                        &middot;
+                        {{ fmt_slot(block.start_slot_in_day) }} &ndash; {{ fmt_slot(block.end_slot_in_day) }}
+                    </span>
+                    <span class="block-coverage">
+                        {{ block.students_covered_in_block }}/{{ result.total_students }} students available
+                    </span>
+                </li>
+                {% endfor %}
+            </ul>
             <div>
                 <button type="button" class="btn btn-primary result-btn" id="openResultCalendar">View Result Calendar</button>
             </div>
         </section>
         <div
             id="resultData"
-            data-day="{{ result.slot_day }}"
-            data-start="{{ result.start_slot_in_day }}"
-            data-end="{{ result.end_slot_in_day }}"
+            data-blocks='[{% for block in result.blocks %}{"day":"{{ block.slot_day }}","start":{{ block.start_slot_in_day }},"end":{{ block.end_slot_in_day }},"covered":{{ block.students_covered_in_block }}}{% if not loop.last %},{% endif %}{% endfor %}]'
         ></div>
         <div class="modal-backdrop" id="resultModal">
             <div class="modal-card">
                 <div class="toolbar" style="justify-content: space-between;">
-                    <h2 class="card-title">Optimal Time Slot (Calendar View)</h2>
+                    <h2 class="card-title">Optimal Time Slots (Calendar View)</h2>
                     <button type="button" class="btn btn-secondary" id="closeResultCalendar">Close</button>
                 </div>
-                <p class="muted">Highlighted blocks show the recommended office hour window.</p>
+                <p class="muted">Highlighted cells show the recommended office hour windows.</p>
                 <div class="calendar-wrap">
                     <div class="calendar-grid" id="resultCalendar"></div>
                 </div>
@@ -476,7 +552,7 @@
                     <div class="calendar-wrap">
                         <div class="calendar-grid" id="studentCalendar"></div>
                     </div>
-                    <button class="btn btn-secondary" id="clearStudentGrid" type="button">Clear Current Student Availability</button>
+                    <button class="btn btn-danger" id="clearStudentGrid" type="button">Clear Current Student Availability</button>
                     <textarea class="hidden-manual" id="studentRows" name="students_manual">{{ request.form.get("students_manual", "") }}</textarea>
                 </section>
             </article>
@@ -506,21 +582,29 @@
                     <div class="calendar-wrap">
                         <div class="calendar-grid" id="teacherCalendar"></div>
                     </div>
-                    <button class="btn btn-secondary" id="clearTeacherGrid" type="button">Clear Teacher Availability</button>
+                    <button class="btn btn-danger" id="clearTeacherGrid" type="button">Clear Teacher Availability</button>
                     <textarea class="hidden-manual" id="teacherRows" name="teachers_manual">{{ request.form.get("teachers_manual", "") }}</textarea>
                 </section>
             </article>
             <article class="card" style="grid-column: 1 / -1;">
                 <h2 class="card-title">Run Optimization</h2>
-                <p class="muted">Manual text is used if present; otherwise uploaded CSV files are used.</p>
-                <div class="input-grid" style="grid-template-columns: 220px 1fr;">
+                <p class="muted">Manual text is used if present; otherwise uploaded CSV files are used. The optimizer picks the requested number of non-overlapping blocks that together cover the most unique students.</p>
+                <div class="run-controls">
                     <div class="row">
-                        <label class="input-label" for="slotLength">Office Hour Length (slots)</label>
-                        <input id="slotLength" name="slot_length_slots" type="number" min="1" value="{{ request.form.get('slot_length_slots', 2) }}" />
+                        <label class="input-label" for="slotLength">Block length</label>
+                        <select id="slotLength" name="slot_length_slots">
+                            <option value="1" {% if request.form.get('slot_length_slots', '2') == '1' %}selected{% endif %}>30 minutes</option>
+                            <option value="2" {% if request.form.get('slot_length_slots', '2') == '2' %}selected{% endif %}>1 hour</option>
+                        </select>
                     </div>
-                </div>
-                <div class="toolbar">
-                    <button class="btn btn-primary" type="submit">Run Scheduler</button>
+                    <div class="row">
+                        <label class="input-label" for="numBlocks">Number of blocks</label>
+                        <input id="numBlocks" name="num_blocks" type="number" min="1" max="20" value="{{ request.form.get('num_blocks', 1) }}" />
+                    </div>
+                    <div class="row run-submit">
+                        <label class="input-label" aria-hidden="true">&nbsp;</label>
+                        <button class="btn btn-primary" type="submit">Run Scheduler</button>
+                    </div>
                 </div>
             </article>
         </form>
@@ -555,6 +639,8 @@
         const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
         const START_SLOT = 16; // 8:00 AM
         const END_SLOT = 40; // 8:00 PM
+        let isDragging = false;
+        let dragShouldActivate = null;
 
         function slotToLabel(slot) {
             const totalMinutes = slot * 30;
@@ -581,7 +667,7 @@
             previewBox.textContent = `${studentSection}\n\n${teacherSection}`;
         }
 
-        function buildCalendar(containerId, getIsActive, toggleCell) {
+        function buildCalendar(containerId, getIsActive, setCellState) {
             const root = document.getElementById(containerId);
             root.innerHTML = "";
 
@@ -600,10 +686,23 @@
                     if (getIsActive(day, slot)) {
                         cell.classList.add("active");
                     }
-                    if (toggleCell) {
-                        cell.addEventListener("click", () => {
-                            toggleCell(day, slot);
-                            cell.classList.toggle("active");
+                    if (setCellState) {
+                        const applyState = (active) => {
+                            setCellState(day, slot, active);
+                            cell.classList.toggle("active", getIsActive(day, slot));
+                        };
+
+                        cell.addEventListener("mousedown", (event) => {
+                            if (event.button !== 0) return;
+                            event.preventDefault();
+                            isDragging = true;
+                            dragShouldActivate = !getIsActive(day, slot);
+                            applyState(dragShouldActivate);
+                        });
+
+                        cell.addEventListener("mouseenter", () => {
+                            if (!isDragging || dragShouldActivate === null) return;
+                            applyState(dragShouldActivate);
                         });
                     }
                     root.appendChild(cell);
@@ -611,9 +710,9 @@
             }
         }
 
-        function buildResultCalendar(day, startSlot, endSlot) {
+        function buildResultCalendar(blocks) {
             const root = document.getElementById("resultCalendar");
-            if (!root) return;
+            if (!root || !Array.isArray(blocks) || blocks.length === 0) return;
             root.innerHTML = "";
 
             root.appendChild(Object.assign(document.createElement("div"), { className: "cell head", textContent: "Time" }));
@@ -621,15 +720,25 @@
                 root.appendChild(Object.assign(document.createElement("div"), { className: "cell head", textContent: label }));
             });
 
-            const start = Math.max(START_SLOT, startSlot - 4);
-            const end = Math.min(END_SLOT, endSlot + 4);
+            const minStart = Math.min(...blocks.map((b) => b.start));
+            const maxEnd = Math.max(...blocks.map((b) => b.end));
+            const start = Math.max(START_SLOT, minStart - 4);
+            const end = Math.min(END_SLOT, maxEnd + 4);
+
+            const blockLookup = new Set(
+                blocks.flatMap((b) => {
+                    const slots = [];
+                    for (let s = b.start; s < b.end; s += 1) slots.push(`${b.day}:${s}`);
+                    return slots;
+                })
+            );
 
             for (let slot = start; slot < end; slot += 1) {
                 root.appendChild(Object.assign(document.createElement("div"), { className: "cell time", textContent: slotToLabel(slot) }));
                 DAYS.forEach((d) => {
                     const cell = document.createElement("div");
                     cell.className = "cell slot";
-                    if (d === day && slot >= startSlot && slot < endSlot) {
+                    if (blockLookup.has(`${d}:${slot}`)) {
                         cell.classList.add("active", "result-slot");
                     }
                     root.appendChild(cell);
@@ -713,11 +822,16 @@
             buildCalendar(
                 "studentCalendar",
                 (day, slot) => activeSet.has(`${day}:${slot}`),
-                (day, slot) => {
+                (day, slot, active) => {
                     const key = `${day}:${slot}`;
-                    if (activeSet.has(key)) activeSet.delete(key);
-                    else activeSet.add(key);
-                    serializeManualRows();
+                    const alreadyActive = activeSet.has(key);
+                    if (active && !alreadyActive) {
+                        activeSet.add(key);
+                        serializeManualRows();
+                    } else if (!active && alreadyActive) {
+                        activeSet.delete(key);
+                        serializeManualRows();
+                    }
                 }
             );
         }
@@ -726,11 +840,16 @@
             buildCalendar(
                 "teacherCalendar",
                 (day, slot) => teacherSet.has(`${day}:${slot}`),
-                (day, slot) => {
+                (day, slot, active) => {
                     const key = `${day}:${slot}`;
-                    if (teacherSet.has(key)) teacherSet.delete(key);
-                    else teacherSet.add(key);
-                    serializeManualRows();
+                    const alreadyActive = teacherSet.has(key);
+                    if (active && !alreadyActive) {
+                        teacherSet.add(key);
+                        serializeManualRows();
+                    } else if (!active && alreadyActive) {
+                        teacherSet.delete(key);
+                        serializeManualRows();
+                    }
                 }
             );
         }
@@ -773,6 +892,16 @@
             serializeManualRows();
         });
 
+        document.addEventListener("mouseup", () => {
+            isDragging = false;
+            dragShouldActivate = null;
+        });
+
+        window.addEventListener("blur", () => {
+            isDragging = false;
+            dragShouldActivate = null;
+        });
+
         setupTabs("students");
         setupTabs("teachers");
 
@@ -787,10 +916,13 @@
         const openResultCalendar = document.getElementById("openResultCalendar");
         const closeResultCalendar = document.getElementById("closeResultCalendar");
         if (resultData && resultModal && openResultCalendar && closeResultCalendar) {
-            const day = resultData.dataset.day;
-            const start = Number(resultData.dataset.start);
-            const end = Number(resultData.dataset.end);
-            buildResultCalendar(day, start, end);
+            let blocks = [];
+            try {
+                blocks = JSON.parse(resultData.dataset.blocks || "[]");
+            } catch (err) {
+                blocks = [];
+            }
+            buildResultCalendar(blocks);
 
             openResultCalendar.addEventListener("click", () => {
                 resultModal.classList.add("open");
