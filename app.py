@@ -30,6 +30,11 @@ def index():
             students_manual = request.form.get("students_manual", "").strip()
             teachers_manual = request.form.get("teachers_manual", "").strip()
             slot_length_slots = int(request.form.get("slot_length_slots", "2"))
+            num_blocks = int(request.form.get("num_blocks", "1"))
+            if slot_length_slots < 1:
+                raise ValueError("Office hour length must be at least one 30-minute slot.")
+            if num_blocks < 1:
+                raise ValueError("Number of office hour blocks must be at least 1.")
 
             if students_manual:
                 student_rows = parse_manual_students(students_manual)
@@ -47,6 +52,7 @@ def index():
                 student_rows=student_rows,
                 teacher_rows=teacher_rows,
                 slot_length_slots=slot_length_slots,
+                num_blocks=num_blocks,
             )
         except (ValueError, UnicodeDecodeError) as exc:
             error = str(exc)
