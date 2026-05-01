@@ -6,6 +6,9 @@ availability. Built as the AI-class final project by Ashton Beresford,
 Truman Godsey, and Brad Hanley (the "Make an app to help a faculty create
 the best office hours given the students' schedules" prompt).
 
+## Public URL
+https://office-hours-optimizer.onrender.com/
+
 ## What it does
 
 - Takes student availability and teacher availability for Mon–Fri.
