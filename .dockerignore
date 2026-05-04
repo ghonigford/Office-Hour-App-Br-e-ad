@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.gitignore
+README.md
+docs/
+legacy/
+examples/
+tests/
+templates/
+frontend/node_modules/
+frontend/dist/
+.venv/

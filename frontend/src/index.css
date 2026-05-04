@@ -1,0 +1,213 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    @apply h-full;
+  }
+  body {
+    @apply font-sans bg-gradient-to-b from-slate-50 to-slate-100 text-slate-900;
+    @apply dark:from-slate-950 dark:to-slate-900 dark:text-slate-100;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    @apply bg-brand-200/70 text-brand-900;
+  }
+  .dark ::selection {
+    @apply bg-brand-600/40 text-brand-100;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-slate-200 bg-white p-5 shadow-card;
+    @apply dark:border-slate-800 dark:bg-slate-900 dark:shadow-cardDark;
+  }
+
+  .card-title {
+    @apply text-lg font-semibold tracking-tight;
+  }
+
+  .muted {
+    @apply text-sm text-slate-500 dark:text-slate-400;
+  }
+
+  .input-label {
+    @apply text-sm font-semibold text-slate-700 dark:text-slate-300;
+  }
+
+  .input,
+  .select,
+  .textarea {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm
+      placeholder:text-slate-400
+      focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30
+      dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:placeholder:text-slate-500
+      dark:focus:border-brand-400 dark:focus:ring-brand-400/30;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg
+      px-4 py-2 text-sm font-semibold transition-colors
+      disabled:cursor-not-allowed disabled:opacity-60
+      focus:outline-none focus:ring-2 focus:ring-offset-1
+      dark:focus:ring-offset-slate-950;
+  }
+
+  .btn-primary {
+    @apply btn bg-brand-600 text-white hover:bg-brand-700 focus:ring-brand-500/40
+      dark:bg-brand-500 dark:hover:bg-brand-400 dark:text-slate-950;
+  }
+
+  .btn-secondary {
+    @apply btn bg-slate-200 text-slate-900 hover:bg-slate-300 focus:ring-slate-400/40
+      dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700;
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent text-slate-700 hover:bg-slate-200/70 focus:ring-slate-400/40
+      dark:text-slate-300 dark:hover:bg-slate-800;
+  }
+
+  .btn-danger {
+    @apply btn bg-rose-600 text-white hover:bg-rose-700 focus:ring-rose-500/40;
+  }
+
+  .pill-group {
+    @apply inline-flex rounded-full border border-slate-200 bg-white p-1 shadow-sm
+      dark:border-slate-700 dark:bg-slate-900;
+  }
+
+  .pill {
+    @apply rounded-full px-3 py-1 text-xs font-semibold text-slate-600 transition-colors
+      hover:text-slate-900 dark:text-slate-300 dark:hover:text-white whitespace-nowrap;
+  }
+
+  .pill[data-active="true"] {
+    @apply bg-brand-600 text-white shadow-sm dark:bg-brand-500 dark:text-slate-950;
+  }
+
+  .pill[data-active="true"][data-strength="soft"] {
+    @apply bg-soft-500 text-amber-50 dark:bg-soft-500 dark:text-amber-50;
+  }
+
+  .tab {
+    @apply rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 transition-colors
+      hover:text-slate-900 dark:text-slate-400 dark:hover:text-white whitespace-nowrap;
+  }
+
+  .tab[data-active="true"] {
+    @apply bg-white text-brand-700 shadow-sm dark:bg-slate-950 dark:text-brand-300;
+  }
+
+  .status {
+    @apply rounded-xl border p-4 text-sm;
+  }
+
+  .status-error {
+    @apply status border-rose-200 bg-rose-50 text-rose-800
+      dark:border-rose-900/40 dark:bg-rose-950/30 dark:text-rose-200;
+  }
+
+  .status-ok {
+    @apply status border-emerald-200 bg-emerald-50 text-emerald-900
+      dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-200;
+  }
+
+  .legend-swatch {
+    @apply inline-block h-3.5 w-3.5 rounded border border-slate-300 align-middle
+      dark:border-slate-700;
+  }
+
+  .legend-swatch.hard {
+    @apply bg-brand-600 border-transparent;
+  }
+
+  .legend-swatch.soft {
+    background: repeating-linear-gradient(
+      45deg,
+      #f59e0b,
+      #f59e0b 5px,
+      #fde68a 5px,
+      #fde68a 10px
+    );
+    @apply border-transparent;
+  }
+}
+
+@layer utilities {
+  .grid-cell {
+    @apply border-r border-b border-slate-200 dark:border-slate-800;
+  }
+
+  .grid-slot {
+    @apply grid-cell cursor-pointer select-none bg-white text-center text-xs
+      hover:bg-brand-50 dark:bg-slate-950 dark:hover:bg-brand-900;
+  }
+
+  .grid-slot[data-state="hard"] {
+    @apply bg-brand-600 text-white font-semibold hover:bg-brand-600
+      dark:bg-brand-500 dark:text-slate-950;
+  }
+  .dark .grid-slot[data-state="hard"]:hover {
+    @apply bg-brand-500;
+  }
+
+  .grid-slot[data-state="soft"] {
+    color: #7c2d12;
+    background: repeating-linear-gradient(
+      45deg,
+      #f59e0b,
+      #f59e0b 6px,
+      #fde68a 6px,
+      #fde68a 12px
+    );
+    @apply font-semibold hover:opacity-90;
+  }
+
+  .dark .grid-slot[data-state="soft"] {
+    color: #fef3c7;
+    background: repeating-linear-gradient(
+      45deg,
+      #b45309,
+      #b45309 6px,
+      #78350f 6px,
+      #78350f 12px
+    );
+  }
+
+  /* Cross-out marker when in unavailable mode (matches legacy "× = busy"). */
+  .grid-slot[data-mode="unavailable"][data-state="hard"]::after {
+    content: "\00D7";
+    @apply block leading-none text-[0.7rem];
+  }
+
+  .grid-head {
+    @apply grid-cell sticky top-0 z-10 bg-slate-50 px-1 py-1.5 text-center text-xs font-bold
+      text-slate-700 dark:bg-slate-900 dark:text-slate-200;
+  }
+
+  .grid-time {
+    @apply grid-cell sticky left-0 z-[5] bg-slate-50 px-1 py-1.5 text-center text-[0.7rem]
+      font-semibold text-slate-600 dark:bg-slate-900 dark:text-slate-300;
+  }
+
+  .scroll-area {
+    @apply overflow-auto rounded-xl border border-slate-200 bg-white
+      dark:border-slate-800 dark:bg-slate-950;
+    max-height: 460px;
+  }
+
+  /* Result cells (highlighted blocks in the result calendar). */
+  .grid-slot[data-result="hard"] {
+    @apply bg-emerald-300 text-emerald-950 font-bold hover:bg-emerald-300
+      dark:bg-emerald-500 dark:text-emerald-950;
+  }
+  .dark .grid-slot[data-result="hard"]:hover {
+    @apply bg-emerald-500;
+  }
+}
