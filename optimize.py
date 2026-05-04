@@ -1,3 +1,19 @@
+"""Parsing + optimization pipeline for the Office Hours Scheduler.
+
+This module is the single source of truth for two parallel stacks:
+
+* **Legacy** — boolean availability, single teacher, set-cover style
+  unique-student coverage maximization. Entry point:
+  :func:`optimize_from_records`.
+* **v2** — float-weighted (hard/soft/unavailable) availability with
+  multiple teachers and per-block host assignment. Entry point:
+  :func:`optimize_from_records_v2`. A strict superset of the legacy stack.
+
+Both stacks reuse the same week-flattened slot encoding
+(``absolute_slot = day_index * slots_per_day + slot_in_day``) and a
+seeded pymoo GA so results are deterministic across runs.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -15,6 +31,12 @@ DAY_TO_IDX = {day: idx for idx, day in enumerate(DAY_ORDER)}
 
 
 def _normalize_day(raw_day: str) -> str:
+    """Return the canonical 3-letter lowercase day key (``mon``..``fri``).
+
+    Truncates to the first three characters of the lowercased input, so
+    both ``"Monday"`` and ``"mon"`` resolve to ``"mon"``. Raises
+    ``ValueError`` for anything outside the supported weekday set.
+    """
     normalized = raw_day.strip().lower()[:3]
     if normalized not in DAY_TO_IDX:
         raise ValueError(f"Unsupported day value: '{raw_day}'")
@@ -22,6 +44,7 @@ def _normalize_day(raw_day: str) -> str:
 
 
 def _parse_slot(raw_slot: str) -> int:
+    """Parse a non-negative integer slot index, raising ``ValueError`` on bad input."""
     try:
         slot = int(raw_slot)
     except ValueError as exc:
@@ -32,6 +55,11 @@ def _parse_slot(raw_slot: str) -> int:
 
 
 def _parse_time_to_slot(raw_time: str, slot_minutes: int = 30) -> int:
+    """Convert ``HH:MM`` (24-hour) to a slot index measured from midnight.
+
+    The time must align to ``slot_minutes`` boundaries; ``"09:15"`` is
+    rejected at the default 30-minute granularity.
+    """
     parts = raw_time.strip().split(":")
     if len(parts) != 2:
         raise ValueError(f"Invalid HH:MM time: '{raw_time}'")
@@ -45,6 +73,7 @@ def _parse_time_to_slot(raw_time: str, slot_minutes: int = 30) -> int:
 
 
 def _parse_student_slot_rows(rows: list[dict[str, str]]) -> list[tuple[str, str, int, int]]:
+    """Convert dict rows with ``id/day/start_slot/end_slot`` into validated tuples (legacy)."""
     parsed: list[tuple[str, str, int, int]] = []
     for row in rows:
         student_id = row.get("id", "").strip()
@@ -60,6 +89,7 @@ def _parse_student_slot_rows(rows: list[dict[str, str]]) -> list[tuple[str, str,
 
 
 def _parse_teacher_slot_rows(rows: list[dict[str, str]]) -> list[tuple[str, int, int]]:
+    """Convert dict rows with ``day/start_slot/end_slot`` into validated tuples (legacy)."""
     parsed: list[tuple[str, int, int]] = []
     for row in rows:
         day = _normalize_day(row.get("day", ""))
@@ -72,6 +102,7 @@ def _parse_teacher_slot_rows(rows: list[dict[str, str]]) -> list[tuple[str, int,
 
 
 def _read_csv_dicts_from_text(csv_text: str) -> list[dict[str, str]]:
+    """Parse CSV text into a list of header-keyed dicts; empty input returns ``[]``."""
     text = csv_text.strip()
     if not text:
         return []
@@ -79,6 +110,12 @@ def _read_csv_dicts_from_text(csv_text: str) -> list[dict[str, str]]:
 
 
 def parse_student_csv_text(csv_text: str) -> list[tuple[str, str, int, int]]:
+    """Parse a legacy student CSV (slot-format **or** wide Monday/Friday template).
+
+    Returns a list of ``(student_id, day, start_slot, end_slot)`` tuples.
+    Raises ``ValueError`` if neither header set is present or any row is
+    malformed.
+    """
     rows = _read_csv_dicts_from_text(csv_text)
     if not rows:
         return []
@@ -115,6 +152,7 @@ def parse_student_csv_text(csv_text: str) -> list[tuple[str, str, int, int]]:
 
 
 def parse_teacher_csv_text(csv_text: str) -> list[tuple[str, int, int]]:
+    """Parse a legacy teacher CSV (``day,start_slot,end_slot``)."""
     rows = _read_csv_dicts_from_text(csv_text)
     if not rows:
         return []
@@ -126,6 +164,7 @@ def parse_teacher_csv_text(csv_text: str) -> list[tuple[str, int, int]]:
 
 
 def parse_manual_students(text: str) -> list[tuple[str, str, int, int]]:
+    """Parse one-row-per-line student textarea input as ``id,day,start_slot,end_slot``."""
     rows: list[dict[str, str]] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -139,6 +178,7 @@ def parse_manual_students(text: str) -> list[tuple[str, str, int, int]]:
 
 
 def parse_manual_teachers(text: str) -> list[tuple[str, int, int]]:
+    """Parse one-row-per-line teacher textarea input as ``day,start_slot,end_slot``."""
     rows: list[dict[str, str]] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -152,10 +192,12 @@ def parse_manual_teachers(text: str) -> list[tuple[str, int, int]]:
 
 
 def _to_absolute_slot(day: str, slot: int, slots_per_day: int) -> int:
+    """Flatten ``(day, slot_in_day)`` to a single index along the week timeline."""
     return DAY_TO_IDX[day] * slots_per_day + slot
 
 
 def _decode_absolute_slot(absolute_slot: int, slots_per_day: int) -> tuple[str, int]:
+    """Inverse of :func:`_to_absolute_slot` — returns ``(day_key, slot_in_day)``."""
     day_idx = absolute_slot // slots_per_day
     day = DAY_ORDER[day_idx]
     slot = absolute_slot % slots_per_day
@@ -167,6 +209,13 @@ def build_availability_matrices(
     teacher_rows: list[tuple[str, int, int]],
     slots_per_day: int = 48,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Build the boolean availability matrices consumed by the legacy GA.
+
+    Returns ``(student_matrix, teacher_vector, student_ids)`` where
+    ``student_matrix`` has shape ``(num_students, num_total_slots)`` and
+    ``teacher_vector`` has shape ``(num_total_slots,)``. Raises
+    ``ValueError`` on empty input or rows that exceed ``slots_per_day``.
+    """
     if not student_rows:
         raise ValueError("No student availability rows were provided.")
     if not teacher_rows:
@@ -465,6 +514,13 @@ def optimize_from_records(
     num_blocks: int = 1,
     slots_per_day: int = 48,
 ) -> dict[str, Any]:
+    """End-to-end legacy optimization from parsed slot tuples.
+
+    Adds human-readable per-block fields (``slot_day``, ``start_slot_in_day``,
+    ``end_slot_in_day``, ``available_student_ids``) on top of the raw indices
+    returned by :func:`optimize_office_hour_blocks`, and mirrors the first
+    block's keys at the top level for backward compatibility.
+    """
     student_matrix, teacher_vector, student_ids = build_availability_matrices(
         student_rows, teacher_rows, slots_per_day=slots_per_day
     )
@@ -510,7 +566,655 @@ def optimize_from_records(
     return result
 
 
+# ---------------------------------------------------------------------------
+# v2 pipeline: weighted (hard/soft) availability + multiple teachers
+# ---------------------------------------------------------------------------
+#
+# The v2 stack is a strict superset of the legacy stack. Internally we encode
+# every per-slot availability as a float weight in {0.0, 0.5, 1.0} where
+#   1.0 = HARD available  (definitely free / definitely happy to host)
+#   0.5 = SOFT available  (could attend / host but would prefer not to)
+#   0.0 = UNAVAILABLE     (cannot attend / cannot host)
+#
+# Block scoring for a (student, host) pair is the elementwise min of the
+# student's per-slot weight and the host's per-slot weight, then the min
+# across all slots in the block. A student's contribution to a schedule is
+# the max of their per-block scores across all kept blocks. Total objective
+# is the sum across all students.
+
+VALID_STRENGTHS = ("hard", "soft")
+
+
+def _parse_strength(raw: str | None, *, default: str = "hard") -> str:
+    """Normalize a strength label to ``"hard"`` or ``"soft"`` (default ``"hard"``)."""
+    if raw is None:
+        return default
+    text = str(raw).strip().lower()
+    if not text:
+        return default
+    if text not in VALID_STRENGTHS:
+        raise ValueError(f"Invalid strength value: '{raw}'. Use 'hard' or 'soft'.")
+    return text
+
+
+def _strength_to_weight(strength: str) -> float:
+    """Map ``"hard"`` -> 1.0, ``"soft"`` -> 0.5 (anything else assumed soft)."""
+    return 1.0 if strength == "hard" else 0.5
+
+
+def _parse_student_v2_rows(
+    rows: list[dict[str, str]], *, default_strength: str = "hard"
+) -> list[tuple[str, str, int, int, str]]:
+    """Convert dict rows into validated v2 student tuples (with strength)."""
+    parsed: list[tuple[str, str, int, int, str]] = []
+    for row in rows:
+        student_id = (row.get("id") or row.get("student") or "").strip()
+        if not student_id:
+            raise ValueError("Student row is missing 'id'.")
+        day = _normalize_day(row.get("day", ""))
+        start = _parse_slot(row.get("start_slot", ""))
+        end = _parse_slot(row.get("end_slot", ""))
+        if start >= end:
+            raise ValueError(f"Student row has start >= end for '{student_id}'.")
+        strength = _parse_strength(row.get("strength"), default=default_strength)
+        parsed.append((student_id, day, start, end, strength))
+    return parsed
+
+
+def _parse_teacher_v2_rows(
+    rows: list[dict[str, str]], *, default_strength: str = "hard"
+) -> list[tuple[str, str, int, int, str]]:
+    """Convert dict rows into validated v2 teacher tuples (with id + strength)."""
+    parsed: list[tuple[str, str, int, int, str]] = []
+    for row in rows:
+        teacher_id = (row.get("teacher_id") or row.get("teacher") or "teacher").strip() or "teacher"
+        day = _normalize_day(row.get("day", ""))
+        start = _parse_slot(row.get("start_slot", ""))
+        end = _parse_slot(row.get("end_slot", ""))
+        if start >= end:
+            raise ValueError(f"Teacher row has start >= end for '{teacher_id}'.")
+        strength = _parse_strength(row.get("strength"), default=default_strength)
+        parsed.append((teacher_id, day, start, end, strength))
+    return parsed
+
+
+def parse_student_csv_text_v2(csv_text: str) -> list[tuple[str, str, int, int, str]]:
+    """Parse a student CSV that may include an optional ``strength`` column.
+
+    Accepts two slot-format header sets:
+      * ``id,day,start_slot,end_slot``                (back-compat; defaults all to ``"hard"``)
+      * ``id,day,start_slot,end_slot,strength``       (full v2 format)
+
+    Wide format (``Monday_start``/``Monday_end`` etc.) is also accepted and
+    defaults all rows to ``"hard"``.
+    """
+    rows = _read_csv_dicts_from_text(csv_text)
+    if not rows:
+        return []
+
+    headers = {h.strip() for h in rows[0].keys()}
+    slot_required = {"id", "day", "start_slot", "end_slot"}
+    wide_required = {"student", "Monday_start", "Monday_end", "Tuesday_start", "Tuesday_end", "Wednesday_start", "Wednesday_end", "Thursday_start", "Thursday_end", "Friday_start", "Friday_end"}
+
+    if slot_required.issubset(headers):
+        return _parse_student_v2_rows(rows)
+
+    if wide_required.issubset(headers):
+        legacy = parse_student_csv_text(csv_text)
+        return [(sid, day, start, end, "hard") for sid, day, start, end in legacy]
+
+    raise ValueError(
+        "Student CSV must use either 'id,day,start_slot,end_slot[,strength]' "
+        "or the wide template with Monday-Friday start/end columns."
+    )
+
+
+def parse_teacher_csv_text_v2(csv_text: str) -> list[tuple[str, str, int, int, str]]:
+    """Parse a teacher CSV that may include ``teacher_id`` and ``strength`` columns.
+
+    Accepts:
+      * ``day,start_slot,end_slot``                              (legacy: defaults teacher_id="teacher", strength="hard")
+      * ``teacher_id,day,start_slot,end_slot``                   (multi-teacher; defaults strength="hard")
+      * ``teacher_id,day,start_slot,end_slot,strength``          (full v2 format)
+    """
+    rows = _read_csv_dicts_from_text(csv_text)
+    if not rows:
+        return []
+    headers = {h.strip() for h in rows[0].keys()}
+    if not {"day", "start_slot", "end_slot"}.issubset(headers):
+        raise ValueError(
+            "Teacher CSV must use headers: day,start_slot,end_slot[,teacher_id][,strength]"
+        )
+    return _parse_teacher_v2_rows(rows)
+
+
+def parse_manual_students_v2(text: str) -> list[tuple[str, str, int, int, str]]:
+    """Parse manual student rows, accepting 4- or 5-field rows.
+
+    Each non-blank line must be:
+      * ``id,day,start_slot,end_slot``               (defaults strength="hard")
+      * ``id,day,start_slot,end_slot,strength``      (strength is "hard" or "soft")
+    """
+    rows: list[dict[str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) == 4:
+            parts.append("hard")
+        if len(parts) != 5:
+            raise ValueError(
+                "Each student manual row must be: id,day,start_slot,end_slot[,strength]"
+            )
+        rows.append({
+            "id": parts[0],
+            "day": parts[1],
+            "start_slot": parts[2],
+            "end_slot": parts[3],
+            "strength": parts[4],
+        })
+    return _parse_student_v2_rows(rows)
+
+
+def parse_manual_teachers_v2(text: str) -> list[tuple[str, str, int, int, str]]:
+    """Parse manual teacher rows, accepting 3-, 4-, or 5-field rows.
+
+    Each non-blank line may be:
+      * ``day,start_slot,end_slot``                                  (legacy)
+      * ``teacher_id,day,start_slot,end_slot``                       (multi-teacher)
+      * ``teacher_id,day,start_slot,end_slot,strength``              (full v2)
+    """
+    rows: list[dict[str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) == 3:
+            parts = ["teacher", *parts, "hard"]
+        elif len(parts) == 4:
+            parts.append("hard")
+        if len(parts) != 5:
+            raise ValueError(
+                "Each teacher manual row must be: "
+                "[teacher_id,]day,start_slot,end_slot[,strength]"
+            )
+        rows.append({
+            "teacher_id": parts[0],
+            "day": parts[1],
+            "start_slot": parts[2],
+            "end_slot": parts[3],
+            "strength": parts[4],
+        })
+    return _parse_teacher_v2_rows(rows)
+
+
+def build_availability_matrices_v2(
+    student_rows: list[tuple[str, str, int, int, str]],
+    teacher_rows: list[tuple[str, str, int, int, str]],
+    slots_per_day: int = 48,
+) -> tuple[np.ndarray, dict[str, np.ndarray], list[str], list[str]]:
+    """Build float availability matrices for the weighted multi-teacher pipeline.
+
+    Returns
+    -------
+    student_matrix:
+        ``(num_students, num_total_slots)`` float array with values in
+        ``{0.0, 0.5, 1.0}``.
+    teacher_matrices:
+        ``{teacher_id: (num_total_slots,) float array}``.
+    student_ids:
+        Sorted list of unique student IDs in the input.
+    teacher_ids:
+        Sorted list of unique teacher IDs in the input.
+
+    Cells receive the **max** weight across overlapping rows, so a slot marked
+    both ``soft`` and ``hard`` ends up ``hard``.
+    """
+    if not student_rows:
+        raise ValueError("No student availability rows were provided.")
+    if not teacher_rows:
+        raise ValueError("No teacher availability rows were provided.")
+
+    student_ids = sorted({sid for sid, _, _, _, _ in student_rows})
+    teacher_ids = sorted({tid for tid, _, _, _, _ in teacher_rows})
+    student_index = {sid: idx for idx, sid in enumerate(student_ids)}
+
+    total_slots = len(DAY_ORDER) * slots_per_day
+    student_matrix = np.zeros((len(student_ids), total_slots), dtype=np.float64)
+    teacher_matrices: dict[str, np.ndarray] = {
+        tid: np.zeros(total_slots, dtype=np.float64) for tid in teacher_ids
+    }
+
+    for student_id, day, start, end, strength in student_rows:
+        if end > slots_per_day:
+            raise ValueError(
+                f"Student row for '{student_id}' exceeds slots_per_day={slots_per_day}."
+            )
+        absolute_start = _to_absolute_slot(day, start, slots_per_day)
+        absolute_end = _to_absolute_slot(day, end, slots_per_day)
+        weight = _strength_to_weight(strength)
+        idx = student_index[student_id]
+        np.maximum(
+            student_matrix[idx, absolute_start:absolute_end],
+            weight,
+            out=student_matrix[idx, absolute_start:absolute_end],
+        )
+
+    for teacher_id, day, start, end, strength in teacher_rows:
+        if end > slots_per_day:
+            raise ValueError(
+                f"Teacher row '{teacher_id},{day},{start},{end}' exceeds slots_per_day={slots_per_day}."
+            )
+        absolute_start = _to_absolute_slot(day, start, slots_per_day)
+        absolute_end = _to_absolute_slot(day, end, slots_per_day)
+        weight = _strength_to_weight(strength)
+        np.maximum(
+            teacher_matrices[teacher_id][absolute_start:absolute_end],
+            weight,
+            out=teacher_matrices[teacher_id][absolute_start:absolute_end],
+        )
+
+    return student_matrix, teacher_matrices, student_ids, teacher_ids
+
+
+def _valid_slot_starts_weighted(
+    teacher_vector: np.ndarray, slot_length_slots: int
+) -> np.ndarray:
+    """Return slot starts where the teacher is at least SOFT available the whole window."""
+    max_start = teacher_vector.shape[0] - slot_length_slots + 1
+    if max_start <= 0:
+        return np.array([], dtype=int)
+    starts: list[int] = []
+    for start in range(max_start):
+        window = teacher_vector[start : start + slot_length_slots]
+        if float(window.min()) > 0.0:
+            starts.append(start)
+    return np.array(starts, dtype=int)
+
+
+def _block_per_student_score(
+    student_matrix: np.ndarray,
+    teacher_vector: np.ndarray,
+    start: int,
+    length: int,
+) -> np.ndarray:
+    """Score each student for a single (start, host) block.
+
+    Returns ``(num_students,)`` float array. A student's block score is the
+    minimum across the block's slots of ``min(student_weight, host_weight)``.
+    """
+    s_window = student_matrix[:, start : start + length]
+    t_window = teacher_vector[start : start + length]
+    pairwise = np.minimum(s_window, t_window[np.newaxis, :])
+    return pairwise.min(axis=1)
+
+
+def _decode_multi_teacher_picks(
+    raw_x: np.ndarray,
+    candidate_starts: np.ndarray,
+    teacher_ids: list[str],
+    teacher_matrices: dict[str, np.ndarray],
+    slot_length_slots: int,
+) -> list[tuple[int, str]]:
+    """Decode flat 2K GA variables into a sorted, non-overlapping list of (start, host) picks.
+
+    The decision vector is interpreted as alternating ``[start_idx_0, host_idx_0,
+    start_idx_1, host_idx_1, ...]``. Picks where the decoded host cannot host
+    the decoded start (host is unavailable) are dropped before overlap pruning.
+    Overlap is pruned globally regardless of host (a student can only be in
+    one place at a time).
+    """
+    if candidate_starts.size == 0 or not teacher_ids:
+        return []
+    flat = np.atleast_1d(raw_x).ravel()
+    if flat.size % 2 != 0:
+        flat = flat[: flat.size - 1]
+    n_cand = int(candidate_starts.shape[0])
+    n_teachers = len(teacher_ids)
+
+    feasible: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for k in range(flat.size // 2):
+        start_raw = flat[2 * k]
+        host_raw = flat[2 * k + 1]
+        start_idx = int(np.clip(np.rint(start_raw), 0, n_cand - 1))
+        host_idx = int(np.clip(np.rint(host_raw), 0, n_teachers - 1))
+        start = int(candidate_starts[start_idx])
+        host = teacher_ids[host_idx]
+        host_window = teacher_matrices[host][start : start + slot_length_slots]
+        if host_window.size != slot_length_slots or float(host_window.min()) <= 0.0:
+            continue
+        key = (start, host)
+        if key in seen:
+            continue
+        seen.add(key)
+        feasible.append(key)
+
+    feasible.sort(key=lambda pair: pair[0])
+    kept: list[tuple[int, str]] = []
+    last_end = -1
+    for start, host in feasible:
+        if start >= last_end:
+            kept.append((start, host))
+            last_end = start + slot_length_slots
+    return kept
+
+
+def _aggregate_weighted_coverage(
+    student_matrix: np.ndarray,
+    teacher_matrices: dict[str, np.ndarray],
+    kept: list[tuple[int, str]],
+    slot_length_slots: int,
+) -> np.ndarray:
+    """For each student return their best per-block score across ``kept``.
+
+    Output shape is ``(num_students,)`` with values in ``{0.0, 0.5, 1.0}``.
+    """
+    if student_matrix.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    best = np.zeros(student_matrix.shape[0], dtype=np.float64)
+    for start, host in kept:
+        scores = _block_per_student_score(
+            student_matrix, teacher_matrices[host], start, slot_length_slots
+        )
+        np.maximum(best, scores, out=best)
+    return best
+
+
+class OfficeHoursWeightedMultiTeacherProblem(ElementwiseProblem):
+    """Pymoo problem for weighted, multi-teacher, multi-block scheduling.
+
+    Decision vector: ``[start_idx_0, host_idx_0, start_idx_1, host_idx_1, ...]``
+    (length ``2 * num_blocks``). Each block contributes a (start, host) pair.
+    The decoder drops infeasible picks and prunes overlap; the objective is
+    the negative sum of weighted unique student coverage.
+    """
+
+    def __init__(
+        self,
+        student_matrix: np.ndarray,
+        candidate_starts: np.ndarray,
+        teacher_ids: list[str],
+        teacher_matrices: dict[str, np.ndarray],
+        slot_length_slots: int,
+        num_blocks: int,
+    ) -> None:
+        if not teacher_ids:
+            raise ValueError("At least one teacher is required.")
+        if candidate_starts.size == 0:
+            raise ValueError(
+                "No feasible slot start found across the given teacher availability."
+            )
+        self.student_matrix = student_matrix
+        self.candidate_starts = candidate_starts
+        self.teacher_ids = list(teacher_ids)
+        self.teacher_matrices = teacher_matrices
+        self.slot_length_slots = slot_length_slots
+        self.num_blocks = num_blocks
+
+        n_var = 2 * num_blocks
+        xl = np.zeros(n_var, dtype=float)
+        xu = np.empty(n_var, dtype=float)
+        xu[0::2] = max(len(candidate_starts) - 1, 0)
+        xu[1::2] = max(len(self.teacher_ids) - 1, 0)
+        super().__init__(n_var=n_var, n_obj=1, xl=xl, xu=xu)
+
+    def _evaluate(
+        self, x: np.ndarray, out: dict[str, Any], *args: Any, **kwargs: Any
+    ) -> None:
+        kept = _decode_multi_teacher_picks(
+            x,
+            self.candidate_starts,
+            self.teacher_ids,
+            self.teacher_matrices,
+            self.slot_length_slots,
+        )
+        if not kept:
+            out["F"] = [0.0]
+            return
+        best = _aggregate_weighted_coverage(
+            self.student_matrix, self.teacher_matrices, kept, self.slot_length_slots
+        )
+        out["F"] = [-float(best.sum())]
+
+
+def optimize_weighted_multi_teacher(
+    student_matrix: np.ndarray,
+    teacher_matrices: dict[str, np.ndarray],
+    teacher_ids: list[str],
+    slot_length_slots: int = 2,
+    num_blocks: int = 1,
+    pop_size: int = 60,
+    generations: int = 80,
+    seed: int = 1,
+) -> dict[str, Any]:
+    """Pick ``num_blocks`` non-overlapping (start, host) blocks maximizing weighted coverage.
+
+    Returns a dict with ``blocks`` (each containing ``slot_start_index``,
+    ``host``, per-block hard/soft availability counts, and the lists of
+    available student indices), aggregate weighted/hard/soft coverage counts,
+    plus the index lists for the union of fully-hard-covered and any-covered
+    students.
+    """
+    student_matrix = np.asarray(student_matrix, dtype=np.float64)
+    if student_matrix.ndim != 2:
+        raise ValueError("student_matrix must be a 2D array.")
+    if not teacher_ids:
+        raise ValueError("At least one teacher is required.")
+    if slot_length_slots < 1:
+        raise ValueError("slot_length_slots must be >= 1.")
+    if num_blocks < 1:
+        raise ValueError("num_blocks must be >= 1.")
+
+    teacher_matrices_f: dict[str, np.ndarray] = {}
+    for tid in teacher_ids:
+        if tid not in teacher_matrices:
+            raise ValueError(f"Missing availability for teacher '{tid}'.")
+        vec = np.asarray(teacher_matrices[tid], dtype=np.float64)
+        if vec.ndim != 1:
+            raise ValueError(f"Teacher '{tid}' availability must be a 1D array.")
+        if vec.shape[0] != student_matrix.shape[1]:
+            raise ValueError(
+                f"Teacher '{tid}' time axis ({vec.shape[0]}) does not match students "
+                f"({student_matrix.shape[1]})."
+            )
+        teacher_matrices_f[tid] = vec
+
+    union_teacher = np.zeros(student_matrix.shape[1], dtype=np.float64)
+    for vec in teacher_matrices_f.values():
+        np.maximum(union_teacher, vec, out=union_teacher)
+    candidate_starts = _valid_slot_starts_weighted(union_teacher, slot_length_slots)
+    if candidate_starts.size == 0:
+        raise ValueError(
+            "No feasible slot start found for the given teacher availability and slot length."
+        )
+
+    problem = OfficeHoursWeightedMultiTeacherProblem(
+        student_matrix=student_matrix,
+        candidate_starts=candidate_starts,
+        teacher_ids=list(teacher_ids),
+        teacher_matrices=teacher_matrices_f,
+        slot_length_slots=slot_length_slots,
+        num_blocks=num_blocks,
+    )
+    scaled_pop = max(pop_size, 20 * num_blocks)
+    scaled_gens = max(generations, 40 * num_blocks)
+    algorithm = GA(pop_size=scaled_pop)
+    result = minimize(
+        problem,
+        algorithm,
+        termination=("n_gen", scaled_gens),
+        seed=seed,
+        verbose=False,
+    )
+    raw_x = np.atleast_1d(result.X).astype(float)
+    kept = _decode_multi_teacher_picks(
+        raw_x,
+        candidate_starts,
+        list(teacher_ids),
+        teacher_matrices_f,
+        slot_length_slots,
+    )
+    if not kept:
+        raise ValueError("Optimizer failed to produce any feasible block selection.")
+
+    n_students = int(student_matrix.shape[0])
+    blocks: list[dict[str, Any]] = []
+    union_best = np.zeros(n_students, dtype=np.float64)
+
+    for start, host in kept:
+        per_student = _block_per_student_score(
+            student_matrix, teacher_matrices_f[host], start, slot_length_slots
+        )
+        np.maximum(union_best, per_student, out=union_best)
+        hard_idx = np.where(per_student >= 1.0)[0].tolist()
+        soft_idx = np.where((per_student > 0.0) & (per_student < 1.0))[0].tolist()
+        any_idx = np.where(per_student > 0.0)[0].tolist()
+        blocks.append({
+            "slot_start_index": int(start),
+            "host": host,
+            "students_covered_hard": len(hard_idx),
+            "students_covered_soft": len(soft_idx),
+            "students_covered_in_block": len(any_idx),
+            "available_student_indices": any_idx,
+            "hard_student_indices": hard_idx,
+            "soft_student_indices": soft_idx,
+            "weighted_coverage": float(per_student.sum()),
+        })
+
+    hard_mask = union_best >= 1.0
+    any_mask = union_best > 0.0
+    weighted_total = float(union_best.sum())
+    return {
+        "blocks": blocks,
+        "slot_length_slots": slot_length_slots,
+        "num_blocks_requested": num_blocks,
+        "num_blocks_selected": len(blocks),
+        "students_covered_hard": int(hard_mask.sum()),
+        "students_covered_any": int(any_mask.sum()),
+        "students_covered": int(any_mask.sum()),
+        "weighted_coverage": weighted_total,
+        "total_students": n_students,
+        "coverage_ratio": float(any_mask.sum()) / n_students if n_students else 0.0,
+        "hard_coverage_ratio": float(hard_mask.sum()) / n_students if n_students else 0.0,
+        "weighted_coverage_ratio": weighted_total / n_students if n_students else 0.0,
+        "hard_student_indices": np.where(hard_mask)[0].tolist(),
+        "covered_student_indices": np.where(any_mask)[0].tolist(),
+        "per_student_best_score": union_best.tolist(),
+    }
+
+
+def _summarize_availability(
+    rows: list[tuple[str, str, int, int, str]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Group v2 availability rows by entity, returning a sorted summary per entity.
+
+    Used for the result schema so the share link / template can render each
+    student's or teacher's availability without re-shipping the raw matrices.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for entity_id, day, start, end, strength in rows:
+        grouped.setdefault(entity_id, []).append({
+            "day": day,
+            "start_slot": int(start),
+            "end_slot": int(end),
+            "strength": strength,
+        })
+    for entity_id in grouped:
+        grouped[entity_id].sort(
+            key=lambda entry: (DAY_TO_IDX.get(entry["day"], 99), entry["start_slot"])
+        )
+    return grouped
+
+
+def optimize_from_records_v2(
+    student_rows: list[tuple[str, str, int, int, str]],
+    teacher_rows: list[tuple[str, str, int, int, str]],
+    slot_length_slots: int = 2,
+    num_blocks: int = 1,
+    slots_per_day: int = 48,
+) -> dict[str, Any]:
+    """End-to-end weighted, multi-teacher optimization from parsed v2 rows."""
+    student_matrix, teacher_matrices, student_ids, teacher_ids = build_availability_matrices_v2(
+        student_rows, teacher_rows, slots_per_day=slots_per_day
+    )
+    raw = optimize_weighted_multi_teacher(
+        student_matrix=student_matrix,
+        teacher_matrices=teacher_matrices,
+        teacher_ids=teacher_ids,
+        slot_length_slots=slot_length_slots,
+        num_blocks=num_blocks,
+    )
+
+    blocks: list[dict[str, Any]] = []
+    for block in raw["blocks"]:
+        start_idx = block["slot_start_index"]
+        day, start_in_day = _decode_absolute_slot(start_idx, slots_per_day)
+        _, end_in_day = _decode_absolute_slot(start_idx + slot_length_slots, slots_per_day)
+        blocks.append({
+            "slot_start_index": start_idx,
+            "slot_day": day,
+            "start_slot_in_day": start_in_day,
+            "end_slot_in_day": end_in_day,
+            "host": block["host"],
+            "students_covered_hard": block["students_covered_hard"],
+            "students_covered_soft": block["students_covered_soft"],
+            "students_covered_in_block": block["students_covered_in_block"],
+            "weighted_coverage": block["weighted_coverage"],
+            "available_student_ids": [student_ids[i] for i in block["available_student_indices"]],
+            "hard_student_ids": [student_ids[i] for i in block["hard_student_indices"]],
+            "soft_student_ids": [student_ids[i] for i in block["soft_student_indices"]],
+        })
+
+    covered_ids = {student_ids[i] for i in raw["covered_student_indices"]}
+    uncovered_ids = [sid for sid in student_ids if sid not in covered_ids]
+
+    student_summary = _summarize_availability(student_rows)
+    teacher_summary = _summarize_availability(teacher_rows)
+
+    primary = blocks[0] if blocks else None
+    result: dict[str, Any] = {
+        "blocks": blocks,
+        "slot_length_slots": slot_length_slots,
+        "slots_per_day": slots_per_day,
+        "num_blocks_requested": raw["num_blocks_requested"],
+        "num_blocks_selected": raw["num_blocks_selected"],
+        "students_covered": raw["students_covered"],
+        "students_covered_hard": raw["students_covered_hard"],
+        "students_covered_any": raw["students_covered_any"],
+        "weighted_coverage": raw["weighted_coverage"],
+        "total_students": raw["total_students"],
+        "coverage_ratio": raw["coverage_ratio"],
+        "hard_coverage_ratio": raw["hard_coverage_ratio"],
+        "weighted_coverage_ratio": raw["weighted_coverage_ratio"],
+        "student_ids": student_ids,
+        "teacher_ids": teacher_ids,
+        "covered_student_ids": [student_ids[i] for i in raw["covered_student_indices"]],
+        "hard_student_ids": [student_ids[i] for i in raw["hard_student_indices"]],
+        "uncovered_student_ids": uncovered_ids,
+        "student_availability": student_summary,
+        "teacher_availability": teacher_summary,
+        "per_student_best_score": raw["per_student_best_score"],
+    }
+    if primary is not None:
+        # Mirror legacy keys so the existing template + tests keep working.
+        result["slot_start_index"] = primary["slot_start_index"]
+        result["slot_day"] = primary["slot_day"]
+        result["start_slot_in_day"] = primary["start_slot_in_day"]
+        result["end_slot_in_day"] = primary["end_slot_in_day"]
+    return result
+
+
 def write_result_csv(result: dict[str, Any], output_path: str | Path) -> Path:
+    """Write one row per selected block to ``output_path`` and return the path.
+
+    Accepts both legacy and v2 result dicts because v2 keeps the legacy
+    block keys (``slot_day``/``start_slot_in_day``/``end_slot_in_day``)
+    populated. Falls back to the older flat-keyed shape when ``blocks`` is
+    absent.
+    """
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     blocks = result.get("blocks") or [

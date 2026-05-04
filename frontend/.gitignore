@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.local
+.vite/
+.cache/
+.tsbuild-node/
+*.tsbuildinfo
