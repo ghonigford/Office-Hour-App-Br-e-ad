@@ -1,3 +1,15 @@
+"""Flask entrypoint for the Office Hours Scheduler.
+
+Exposes the JSON API used by the React SPA (``POST /api/optimize`` and
+``GET /api/share/<token>``) and serves the prebuilt SPA shell from
+``frontend/dist/``. All request validation lives in this module; the heavy
+lifting (parsing + GA-based optimization) is delegated to ``optimize``.
+
+Share tokens are stateless: the result dict is gzip-compressed and
+URL-safe-base64-encoded, so existing ``/r/<token>`` links survive deploys
+without any server-side store.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -43,12 +55,22 @@ SUPPORTED_SLOT_MINUTES = (15, 30, 60)
 
 
 def _encode_share_token(payload: dict[str, Any]) -> str:
+    """Serialize a result dict into a stateless, URL-safe share token.
+
+    The token is gzip-compressed JSON, base64-encoded with ``=`` padding
+    stripped so it can sit in a URL path segment unescaped.
+    """
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     compressed = gzip.compress(raw, compresslevel=9)
     return base64.urlsafe_b64encode(compressed).decode("ascii").rstrip("=")
 
 
 def _decode_share_token(token: str) -> dict[str, Any]:
+    """Inverse of :func:`_encode_share_token`.
+
+    Raises ``ValueError`` on any decode failure (bad base64, bad gzip, bad
+    JSON) so the route can return a single 404 regardless of the cause.
+    """
     pad = "=" * ((4 - len(token) % 4) % 4)
     try:
         compressed = base64.urlsafe_b64decode(token + pad)
@@ -64,6 +86,11 @@ def _decode_share_token(token: str) -> dict[str, Any]:
 
 
 def _coerce_int(value: Any, default: int, *, minimum: int, maximum: int, label: str) -> int:
+    """Coerce a JSON value to a bounded integer or raise ``ValueError``.
+
+    Empty/missing values fall back to ``default``. ``label`` is embedded in
+    the error message so the route surfaces a useful 400 to the SPA.
+    """
     if value is None or value == "":
         return default
     try:
@@ -76,6 +103,7 @@ def _coerce_int(value: Any, default: int, *, minimum: int, maximum: int, label: 
 
 
 def _resolve_slot_minutes(value: Any) -> int:
+    """Validate the slot-granularity setting against ``SUPPORTED_SLOT_MINUTES``."""
     if value is None or value == "":
         return DEFAULT_SLOT_MINUTES
     try:
@@ -159,6 +187,13 @@ def _normalize_rows(rows: Any) -> list[tuple]:
 
 
 def _run_optimize_from_json(body: dict[str, Any]) -> dict[str, Any]:
+    """Validate a ``/api/optimize`` JSON body and run the appropriate pipeline.
+
+    Routes to the legacy single-teacher boolean stack when the request shape
+    matches its constraints (default 30-min slots, single teacher, all-hard
+    rows on both sides) so legacy result keys are preserved. Any richer
+    payload falls through to the v2 weighted/multi-teacher stack.
+    """
     settings = body.get("settings") or {}
     students_payload = body.get("students") or {}
     teachers_payload = body.get("teachers") or {}
@@ -232,6 +267,11 @@ def _run_optimize_from_json(body: dict[str, Any]) -> dict[str, Any]:
 
 @app.route("/api/optimize", methods=["POST"])
 def api_optimize():
+    """Run the optimizer and return ``{result, share_token}`` on success.
+
+    Validation errors surface as HTTP 400 with ``{"error": "..."}``;
+    unexpected exceptions are logged and returned as HTTP 500.
+    """
     if not request.is_json:
         return jsonify({"error": "Expected application/json body."}), 400
     body = request.get_json(silent=True) or {}
@@ -254,6 +294,7 @@ def api_optimize():
 
 @app.route("/api/share/<token>", methods=["GET"])
 def api_share(token: str):
+    """Return the previously-encoded result for a share token, or HTTP 404."""
     try:
         result = _decode_share_token(token)
     except ValueError:
@@ -267,6 +308,7 @@ def api_share(token: str):
 
 
 def _spa_index_response():
+    """Serve the prebuilt SPA shell, or a placeholder if it hasn't been built."""
     index = FRONTEND_DIST / "index.html"
     if index.is_file():
         return send_from_directory(FRONTEND_DIST, "index.html")
@@ -274,6 +316,11 @@ def _spa_index_response():
 
 
 def _frontend_missing_page():
+    """Self-contained HTML page shown when ``frontend/dist/`` is absent.
+
+    Kept inline (no Jinja, no template file) so this works even before any
+    frontend build has been run.
+    """
     body = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Frontend not built</title>
 <style>body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0f172a;color:#e2e8f0;
@@ -296,16 +343,23 @@ npm run dev</code></pre>
 
 @app.route("/")
 def index():
+    """Serve the SPA shell at the root path."""
     return _spa_index_response()
 
 
 @app.route("/r/<token>")
 def share_result(token: str):  # noqa: ARG001 - SPA renders the share view client-side
+    """Serve the SPA shell for share links.
+
+    The token is intentionally ignored server-side; the SPA reads it from
+    ``window.location.pathname`` and fetches via ``/api/share/<token>``.
+    """
     return _spa_index_response()
 
 
 @app.route("/favicon.svg")
 def favicon_svg():
+    """Serve the favicon copied into ``frontend/dist/`` by Vite."""
     favicon = FRONTEND_DIST / "favicon.svg"
     if favicon.is_file():
         return send_from_directory(FRONTEND_DIST, "favicon.svg")
@@ -314,6 +368,7 @@ def favicon_svg():
 
 @app.route("/assets/<path:filename>")
 def assets(filename: str):
+    """Serve hashed JS/CSS bundles produced by the Vite build."""
     assets_dir = FRONTEND_DIST / "assets"
     if not assets_dir.is_dir():
         abort(404)

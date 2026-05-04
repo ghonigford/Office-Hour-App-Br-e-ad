@@ -1,3 +1,19 @@
+"""Parsing + optimization pipeline for the Office Hours Scheduler.
+
+This module is the single source of truth for two parallel stacks:
+
+* **Legacy** — boolean availability, single teacher, set-cover style
+  unique-student coverage maximization. Entry point:
+  :func:`optimize_from_records`.
+* **v2** — float-weighted (hard/soft/unavailable) availability with
+  multiple teachers and per-block host assignment. Entry point:
+  :func:`optimize_from_records_v2`. A strict superset of the legacy stack.
+
+Both stacks reuse the same week-flattened slot encoding
+(``absolute_slot = day_index * slots_per_day + slot_in_day``) and a
+seeded pymoo GA so results are deterministic across runs.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -15,6 +31,12 @@ DAY_TO_IDX = {day: idx for idx, day in enumerate(DAY_ORDER)}
 
 
 def _normalize_day(raw_day: str) -> str:
+    """Return the canonical 3-letter lowercase day key (``mon``..``fri``).
+
+    Truncates to the first three characters of the lowercased input, so
+    both ``"Monday"`` and ``"mon"`` resolve to ``"mon"``. Raises
+    ``ValueError`` for anything outside the supported weekday set.
+    """
     normalized = raw_day.strip().lower()[:3]
     if normalized not in DAY_TO_IDX:
         raise ValueError(f"Unsupported day value: '{raw_day}'")
@@ -22,6 +44,7 @@ def _normalize_day(raw_day: str) -> str:
 
 
 def _parse_slot(raw_slot: str) -> int:
+    """Parse a non-negative integer slot index, raising ``ValueError`` on bad input."""
     try:
         slot = int(raw_slot)
     except ValueError as exc:
@@ -32,6 +55,11 @@ def _parse_slot(raw_slot: str) -> int:
 
 
 def _parse_time_to_slot(raw_time: str, slot_minutes: int = 30) -> int:
+    """Convert ``HH:MM`` (24-hour) to a slot index measured from midnight.
+
+    The time must align to ``slot_minutes`` boundaries; ``"09:15"`` is
+    rejected at the default 30-minute granularity.
+    """
     parts = raw_time.strip().split(":")
     if len(parts) != 2:
         raise ValueError(f"Invalid HH:MM time: '{raw_time}'")
@@ -45,6 +73,7 @@ def _parse_time_to_slot(raw_time: str, slot_minutes: int = 30) -> int:
 
 
 def _parse_student_slot_rows(rows: list[dict[str, str]]) -> list[tuple[str, str, int, int]]:
+    """Convert dict rows with ``id/day/start_slot/end_slot`` into validated tuples (legacy)."""
     parsed: list[tuple[str, str, int, int]] = []
     for row in rows:
         student_id = row.get("id", "").strip()
@@ -60,6 +89,7 @@ def _parse_student_slot_rows(rows: list[dict[str, str]]) -> list[tuple[str, str,
 
 
 def _parse_teacher_slot_rows(rows: list[dict[str, str]]) -> list[tuple[str, int, int]]:
+    """Convert dict rows with ``day/start_slot/end_slot`` into validated tuples (legacy)."""
     parsed: list[tuple[str, int, int]] = []
     for row in rows:
         day = _normalize_day(row.get("day", ""))
@@ -72,6 +102,7 @@ def _parse_teacher_slot_rows(rows: list[dict[str, str]]) -> list[tuple[str, int,
 
 
 def _read_csv_dicts_from_text(csv_text: str) -> list[dict[str, str]]:
+    """Parse CSV text into a list of header-keyed dicts; empty input returns ``[]``."""
     text = csv_text.strip()
     if not text:
         return []
@@ -79,6 +110,12 @@ def _read_csv_dicts_from_text(csv_text: str) -> list[dict[str, str]]:
 
 
 def parse_student_csv_text(csv_text: str) -> list[tuple[str, str, int, int]]:
+    """Parse a legacy student CSV (slot-format **or** wide Monday/Friday template).
+
+    Returns a list of ``(student_id, day, start_slot, end_slot)`` tuples.
+    Raises ``ValueError`` if neither header set is present or any row is
+    malformed.
+    """
     rows = _read_csv_dicts_from_text(csv_text)
     if not rows:
         return []
@@ -115,6 +152,7 @@ def parse_student_csv_text(csv_text: str) -> list[tuple[str, str, int, int]]:
 
 
 def parse_teacher_csv_text(csv_text: str) -> list[tuple[str, int, int]]:
+    """Parse a legacy teacher CSV (``day,start_slot,end_slot``)."""
     rows = _read_csv_dicts_from_text(csv_text)
     if not rows:
         return []
@@ -126,6 +164,7 @@ def parse_teacher_csv_text(csv_text: str) -> list[tuple[str, int, int]]:
 
 
 def parse_manual_students(text: str) -> list[tuple[str, str, int, int]]:
+    """Parse one-row-per-line student textarea input as ``id,day,start_slot,end_slot``."""
     rows: list[dict[str, str]] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -139,6 +178,7 @@ def parse_manual_students(text: str) -> list[tuple[str, str, int, int]]:
 
 
 def parse_manual_teachers(text: str) -> list[tuple[str, int, int]]:
+    """Parse one-row-per-line teacher textarea input as ``day,start_slot,end_slot``."""
     rows: list[dict[str, str]] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -152,10 +192,12 @@ def parse_manual_teachers(text: str) -> list[tuple[str, int, int]]:
 
 
 def _to_absolute_slot(day: str, slot: int, slots_per_day: int) -> int:
+    """Flatten ``(day, slot_in_day)`` to a single index along the week timeline."""
     return DAY_TO_IDX[day] * slots_per_day + slot
 
 
 def _decode_absolute_slot(absolute_slot: int, slots_per_day: int) -> tuple[str, int]:
+    """Inverse of :func:`_to_absolute_slot` — returns ``(day_key, slot_in_day)``."""
     day_idx = absolute_slot // slots_per_day
     day = DAY_ORDER[day_idx]
     slot = absolute_slot % slots_per_day
@@ -167,6 +209,13 @@ def build_availability_matrices(
     teacher_rows: list[tuple[str, int, int]],
     slots_per_day: int = 48,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Build the boolean availability matrices consumed by the legacy GA.
+
+    Returns ``(student_matrix, teacher_vector, student_ids)`` where
+    ``student_matrix`` has shape ``(num_students, num_total_slots)`` and
+    ``teacher_vector`` has shape ``(num_total_slots,)``. Raises
+    ``ValueError`` on empty input or rows that exceed ``slots_per_day``.
+    """
     if not student_rows:
         raise ValueError("No student availability rows were provided.")
     if not teacher_rows:
@@ -465,6 +514,13 @@ def optimize_from_records(
     num_blocks: int = 1,
     slots_per_day: int = 48,
 ) -> dict[str, Any]:
+    """End-to-end legacy optimization from parsed slot tuples.
+
+    Adds human-readable per-block fields (``slot_day``, ``start_slot_in_day``,
+    ``end_slot_in_day``, ``available_student_ids``) on top of the raw indices
+    returned by :func:`optimize_office_hour_blocks`, and mirrors the first
+    block's keys at the top level for backward compatibility.
+    """
     student_matrix, teacher_vector, student_ids = build_availability_matrices(
         student_rows, teacher_rows, slots_per_day=slots_per_day
     )
@@ -542,12 +598,14 @@ def _parse_strength(raw: str | None, *, default: str = "hard") -> str:
 
 
 def _strength_to_weight(strength: str) -> float:
+    """Map ``"hard"`` -> 1.0, ``"soft"`` -> 0.5 (anything else assumed soft)."""
     return 1.0 if strength == "hard" else 0.5
 
 
 def _parse_student_v2_rows(
     rows: list[dict[str, str]], *, default_strength: str = "hard"
 ) -> list[tuple[str, str, int, int, str]]:
+    """Convert dict rows into validated v2 student tuples (with strength)."""
     parsed: list[tuple[str, str, int, int, str]] = []
     for row in rows:
         student_id = (row.get("id") or row.get("student") or "").strip()
@@ -566,6 +624,7 @@ def _parse_student_v2_rows(
 def _parse_teacher_v2_rows(
     rows: list[dict[str, str]], *, default_strength: str = "hard"
 ) -> list[tuple[str, str, int, int, str]]:
+    """Convert dict rows into validated v2 teacher tuples (with id + strength)."""
     parsed: list[tuple[str, str, int, int, str]] = []
     for row in rows:
         teacher_id = (row.get("teacher_id") or row.get("teacher") or "teacher").strip() or "teacher"
@@ -1149,6 +1208,13 @@ def optimize_from_records_v2(
 
 
 def write_result_csv(result: dict[str, Any], output_path: str | Path) -> Path:
+    """Write one row per selected block to ``output_path`` and return the path.
+
+    Accepts both legacy and v2 result dicts because v2 keeps the legacy
+    block keys (``slot_day``/``start_slot_in_day``/``end_slot_in_day``)
+    populated. Falls back to the older flat-keyed shape when ``blocks`` is
+    absent.
+    """
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     blocks = result.get("blocks") or [
