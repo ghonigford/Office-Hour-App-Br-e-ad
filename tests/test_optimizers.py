@@ -15,8 +15,10 @@ import pytest
 
 from optimize import (
     optimize_from_records,
+    optimize_from_records_v2,
     optimize_office_hour_blocks,
     optimize_office_hour_slot,
+    optimize_weighted_multi_teacher,
     write_result_csv,
 )
 
@@ -283,6 +285,24 @@ class TestWriteResultCsv:
         assert rows[2][0] == "2"
         assert rows[2][4] == "1"
 
+    def test_v2_result_compatible_with_writer(self, tmp_path: Path) -> None:
+        # The CSV writer should still work end-to-end on a v2 result, since
+        # v2 keeps the legacy block keys (slot_day, start/end_slot_in_day).
+        student_rows = [
+            ("a1", "mon", 18, 22, "hard"),
+            ("a2", "mon", 18, 22, "hard"),
+        ]
+        teacher_rows = [("prof1", "mon", 18, 22, "hard")]
+        result = optimize_from_records_v2(
+            student_rows, teacher_rows, slot_length_slots=2, num_blocks=1
+        )
+        out = tmp_path / "v2.csv"
+        write_result_csv(result, out)
+        with out.open(newline="", encoding="utf-8") as fh:
+            rows = list(csv.reader(fh))
+        # Header + at least one block row.
+        assert len(rows) >= 2
+
     def test_falls_back_to_legacy_keys_when_blocks_missing(self, tmp_path: Path) -> None:
         legacy_result = {
             "slot_day": "tue",
@@ -303,3 +323,164 @@ class TestWriteResultCsv:
         assert rows[1][3] == "22"
         assert rows[1][4] == "2"
         assert rows[1][7] == "0.5000"
+
+
+# ---------------------------------------------------------------------------
+# Weighted multi-teacher optimizer (v2)
+# ---------------------------------------------------------------------------
+
+
+class TestOptimizeWeightedMultiTeacher:
+    def test_single_teacher_hard_only_matches_legacy_count(self) -> None:
+        # All-hard inputs should look like the boolean-coverage case.
+        student_matrix = np.array(
+            [
+                [0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 1.0, 1.0, 0.0, 0.0],
+                [0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+            ]
+        )
+        teachers = {"prof1": np.ones(6)}
+        result = optimize_weighted_multi_teacher(
+            student_matrix, teachers, ["prof1"], slot_length_slots=2, num_blocks=1
+        )
+        assert result["num_blocks_selected"] == 1
+        assert result["students_covered"] == 3
+        assert result["weighted_coverage"] == pytest.approx(3.0)
+        assert result["blocks"][0]["host"] == "prof1"
+
+    def test_two_teachers_disjoint_groups(self) -> None:
+        # Group A available 0..1, Group B available 8..9. Each teacher has a
+        # narrow window aligned with one group only, so the optimizer must
+        # pair each block with the right host to cover everyone.
+        student_matrix = np.zeros((4, 12))
+        student_matrix[0, 0:2] = 1.0
+        student_matrix[1, 0:2] = 1.0
+        student_matrix[2, 8:10] = 1.0
+        student_matrix[3, 8:10] = 1.0
+        teachers = {
+            "prof1": np.zeros(12),
+            "prof2": np.zeros(12),
+        }
+        teachers["prof1"][0:6] = 1.0
+        teachers["prof2"][6:12] = 1.0
+        result = optimize_weighted_multi_teacher(
+            student_matrix, teachers, ["prof1", "prof2"], slot_length_slots=2, num_blocks=2
+        )
+        assert result["students_covered"] == 4
+        assert result["num_blocks_selected"] == 2
+        # The two blocks must use the two different hosts.
+        hosts = sorted(b["host"] for b in result["blocks"])
+        assert hosts == ["prof1", "prof2"]
+
+    def test_soft_counts_half_in_weighted_coverage(self) -> None:
+        # A single hard student and a single soft student. With one block they
+        # must share, weighted coverage = 1.0 (hard) + 0.5 (soft) = 1.5.
+        student_matrix = np.array(
+            [
+                [1.0, 1.0],   # hard
+                [0.5, 0.5],   # soft
+            ]
+        )
+        teachers = {"prof1": np.array([1.0, 1.0])}
+        result = optimize_weighted_multi_teacher(
+            student_matrix, teachers, ["prof1"], slot_length_slots=2, num_blocks=1
+        )
+        assert result["weighted_coverage"] == pytest.approx(1.5)
+        assert result["students_covered"] == 2
+        assert result["students_covered_hard"] == 1
+
+    def test_no_feasible_window_raises(self) -> None:
+        student_matrix = np.ones((1, 6))
+        # Teacher never has 2 contiguous slots.
+        teachers = {"prof1": np.array([1.0, 0.0, 1.0, 0.0, 1.0, 0.0])}
+        with pytest.raises(ValueError, match="No feasible slot"):
+            optimize_weighted_multi_teacher(
+                student_matrix, teachers, ["prof1"], slot_length_slots=2, num_blocks=1
+            )
+
+    def test_rejects_invalid_args(self) -> None:
+        student_matrix = np.ones((1, 6))
+        with pytest.raises(ValueError, match="num_blocks"):
+            optimize_weighted_multi_teacher(
+                student_matrix, {"p": np.ones(6)}, ["p"], slot_length_slots=2, num_blocks=0
+            )
+        with pytest.raises(ValueError, match="slot_length_slots"):
+            optimize_weighted_multi_teacher(
+                student_matrix, {"p": np.ones(6)}, ["p"], slot_length_slots=0, num_blocks=1
+            )
+        with pytest.raises(ValueError, match="At least one teacher"):
+            optimize_weighted_multi_teacher(
+                student_matrix, {}, [], slot_length_slots=2, num_blocks=1
+            )
+
+
+# ---------------------------------------------------------------------------
+# optimize_from_records_v2 (end-to-end)
+# ---------------------------------------------------------------------------
+
+
+class TestOptimizeFromRecordsV2:
+    def test_full_schema(self) -> None:
+        student_rows = [
+            ("s1", "mon", 18, 22, "hard"),
+            ("s2", "mon", 19, 23, "hard"),
+            ("s3", "mon", 18, 23, "soft"),
+        ]
+        teacher_rows = [("prof1", "mon", 18, 24, "hard")]
+        result = optimize_from_records_v2(
+            student_rows, teacher_rows, slot_length_slots=2, num_blocks=1
+        )
+
+        # New keys present.
+        for key in [
+            "blocks", "weighted_coverage", "weighted_coverage_ratio",
+            "students_covered_hard", "uncovered_student_ids",
+            "student_availability", "teacher_availability",
+            "teacher_ids", "per_student_best_score",
+        ]:
+            assert key in result, f"missing key {key!r} in v2 result"
+
+        # Legacy mirror keys still populated.
+        assert "slot_day" in result and "start_slot_in_day" in result
+
+        block = result["blocks"][0]
+        assert block["host"] == "prof1"
+        assert block["students_covered_in_block"] >= 1
+        # All three students should be covered (1 soft + 2 hard).
+        assert result["students_covered"] == 3
+
+    def test_uncovered_students_listed(self) -> None:
+        # s_far is only available outside any teacher window -> uncovered.
+        student_rows = [
+            ("s_near", "mon", 18, 22, "hard"),
+            ("s_far", "fri", 0, 4, "hard"),
+        ]
+        teacher_rows = [("prof1", "mon", 18, 24, "hard")]
+        result = optimize_from_records_v2(
+            student_rows, teacher_rows, slot_length_slots=2, num_blocks=1
+        )
+        assert "s_far" in result["uncovered_student_ids"]
+        assert "s_near" not in result["uncovered_student_ids"]
+        # Availability summary should include both students.
+        assert "s_near" in result["student_availability"]
+        assert "s_far" in result["student_availability"]
+
+    def test_teacher_summary_includes_all_teachers(self) -> None:
+        student_rows = [("s1", "mon", 18, 22, "hard")]
+        teacher_rows = [
+            ("prof1", "mon", 18, 24, "hard"),
+            ("prof2", "tue", 18, 24, "soft"),
+        ]
+        result = optimize_from_records_v2(
+            student_rows, teacher_rows, slot_length_slots=2, num_blocks=1
+        )
+        assert set(result["teacher_ids"]) == {"prof1", "prof2"}
+        assert "prof1" in result["teacher_availability"]
+        assert "prof2" in result["teacher_availability"]
+
+    def test_rejects_empty_inputs(self) -> None:
+        with pytest.raises(ValueError):
+            optimize_from_records_v2([], [("prof", "mon", 18, 24, "hard")])
+        with pytest.raises(ValueError):
+            optimize_from_records_v2([("s1", "mon", 18, 22, "hard")], [])
